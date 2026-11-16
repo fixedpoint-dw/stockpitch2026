@@ -2,7 +2,7 @@ name: Update stock pitch data
 
 on:
   schedule:
-    - cron: "7,37 * * * 1-6"
+    - cron: "3-59/10 * * * 1-6"
   workflow_dispatch:
     inputs:
       force_final:
