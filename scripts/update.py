@@ -145,7 +145,20 @@ class Asset:
         df.index = pd.to_datetime(df.index)
         df["close"] *= self.scale
         df["adj"] *= self.scale
+        if df.empty:
+            raise SymbolNotFound(f"{symbol}: 시세 없음")
         self.df = df
+
+        # Yahoo는 장이 끝난 뒤 한동안 마지막 거래일의 일봉을 비워서(null) 보내는 일이 있다(한국 종목에서 확인).
+        # 그대로 두면 그날 수익률이 통째로 사라지므로, 시세 요약(meta)의 최근 체결가·체결 시각으로 그날 값을 채운다.
+        self.notes = []
+        rmp, rmt = meta.get("regularMarketPrice"), meta.get("regularMarketTime")
+        if rmp and rmt and float(rmp) > 0:
+            qd = pd.Timestamp(pd.Timestamp(int(rmt), unit="s", tz="UTC").tz_convert(self.tz).strftime("%Y-%m-%d"))
+            if qd > self.df.index[-1]:
+                px = float(rmp) * self.scale
+                self.df.loc[qd, ["close", "adj", "ts"]] = [px, px, int(rmt)]
+                self.notes.append(f"{qd:%Y-%m-%d} 일봉 없음 → 시세 요약의 최근 체결가 사용")
 
         self.dividends = []
         ev = res.get("events") or {}
@@ -159,6 +172,36 @@ class Asset:
             when = pd.Timestamp(s["date"], unit="s", tz="UTC").tz_convert(self.tz)
             self.splits.append({"date": when.strftime("%Y-%m-%d"),
                                 "ratio": s.get("splitRatio") or f'{s.get("numerator")}:{s.get("denominator")}'})
+
+    def fill_from(self, cached: dict) -> None:
+        """이전 실행에서 저장해 둔 일별 종가로, 이번 응답에서 빠진 날짜를 채운다 (새 응답에 있는 날짜는 건드리지 않는다)."""
+        for d in sorted(cached or {}, reverse=True):
+            try:
+                day, px = pd.Timestamp(d), float(cached[d])
+            except (TypeError, ValueError):
+                continue
+            if not (px > 0) or day in self.df.index or day <= self.df.index[0]:
+                continue
+            later = self.df[self.df.index > day]
+            ratio = float(later["adj"].iloc[0] / later["close"].iloc[0]) if len(later) else 1.0
+            nxt = later.index[0] if len(later) else None
+            for dv in self.dividends:  # 그 사이에 배당락이 있으면 수정주가 비율을 한 단계 더 적용
+                ex = pd.Timestamp(dv["date"])
+                if ex > day and (nxt is None or ex <= nxt):
+                    ratio *= 1 - dv["amount"] / px
+            self.df.loc[day, ["close", "adj", "ts"]] = [px, px * ratio, 0]
+            self.df = self.df.sort_index()
+            self.notes.append(f"{d} 일봉 없음 → 이전 실행에서 저장한 종가 사용")
+
+    def recent_bars(self, base_date: pd.Timestamp, keep: int = 10) -> dict:
+        """다음 실행을 위해 저장할 일별 종가: 기준일 봉 + 최근 keep개."""
+        out = {}
+        before = self.df[self.df.index <= base_date]
+        if len(before):
+            out[before.index[-1].strftime("%Y-%m-%d")] = round(float(before["close"].iloc[-1]), 6)
+        for day, px in self.df[self.df.index > base_date]["close"].tail(keep).items():
+            out[day.strftime("%Y-%m-%d")] = round(float(px), 6)
+        return out
 
     @property
     def market(self) -> str:
@@ -256,7 +299,7 @@ def market_state(market: str, last_bar_date: str, now: dt.datetime) -> str:
     return "closed"
 
 
-def build(settings: dict, pitches: list[dict], yh: Yahoo, now: dt.datetime) -> tuple[dict, dict]:
+def build(settings: dict, pitches: list[dict], yh: Yahoo, now: dt.datetime, cache: dict | None = None) -> tuple[dict, dict, dict, list]:
     base_date = pd.Timestamp(settings["base_date"])
     final_date = pd.Timestamp(settings["final_date"])
     lock_at = settings.get("final_lock_utc")
@@ -311,6 +354,15 @@ def build(settings: dict, pitches: list[dict], yh: Yahoo, now: dt.datetime) -> t
 
     # 2) 공통 달력: 기준일 + 그 이후 어느 시장이든 거래가 있었던 날 ------------ #
     all_assets = list(assets.values()) + [b["asset"] for b in bench]
+
+    # 1-b) 빠진 일봉 보정: 이전 실행에서 저장한 종가로 채우고, 다음 실행을 위해 최근 종가를 다시 저장
+    everything = all_assets + list(fx.values())
+    new_cache, notes = {}, []
+    for a in everything:
+        key = sid_of("c_", a.symbol)
+        a.fill_from((cache or {}).get(key))
+        new_cache[key] = a.recent_bars(base_date)
+        notes += [f"{a.symbol}: {n}" for n in a.notes]
     days = set()
     for a in all_assets:
         days.update(d for d in a.df.index if d > base_date)
@@ -477,6 +529,10 @@ def build(settings: dict, pitches: list[dict], yh: Yahoo, now: dt.datetime) -> t
     else:
         k_fin = int(np.searchsorted(cal.values, final_date.to_datetime64(), side="right") - 1)
         status = "final" if now >= lock_at else "provisional"
+    # 평가일 종가가 아직 들어오지 않은 종목이 있으면 확정을 미룬다 (최대 24시간, 그 뒤에는 표시를 남기고 확정)
+    missing = [a.symbol for a in everything if final_date not in a.df.index] if cal[-1] >= final_date else []
+    if status == "final" and missing and now < lock_at + dt.timedelta(hours=24):
+        status = "provisional"
     fin_rows, fin_bms = (cur_rows, cur_bms) if k_fin == k_now else snapshot(k_fin)
     fin_fx = {}
     for cur, a in fx.items():
@@ -486,11 +542,11 @@ def build(settings: dict, pitches: list[dict], yh: Yahoo, now: dt.datetime) -> t
         "status": status, "locked": status == "final",
         "computedAt": meta["updatedAt"], "baseDate": settings["base_date"], "finalDate": settings["final_date"],
         "asOfDate": cal[k_fin].strftime("%Y-%m-%d"), "title": meta["title"],
-        "rebalance": meta["rebalance"], "volWindow": W, "fx": fin_fx,
+        "rebalance": meta["rebalance"], "volWindow": W, "fx": fin_fx, "missing": missing,
         "pitches": [{k: v for k, v in o.items() if k not in ("prevRank",)} for o in fin_rows],
         "benchmarks": [{k: v for k, v in o.items() if k != "weights"} for o in fin_bms],
     })
-    return current, final
+    return current, final, new_cache, notes
 
 
 # --------------------------------------------------------------------------- #
@@ -544,6 +600,7 @@ def main() -> int:
     ap.add_argument("--force-final", action="store_true", help="잠긴 최종 평가를 다시 계산해 덮어씀")
     ap.add_argument("--config-dir", default=str(ROOT / "config"), help="pitches.csv, settings.json 이 있는 폴더")
     ap.add_argument("--demo", action="store_true", help="결과에 데모 표시를 넣음")
+    ap.add_argument("--cache-file", help="일별 종가 캐시를 Firebase 대신 이 파일에 읽고 쓴다 (테스트용)")
     args = ap.parse_args()
 
     cfg_dir = Path(args.config_dir)
@@ -555,11 +612,18 @@ def main() -> int:
     stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     try:
-        current, final = build(settings, pitches, Yahoo(args.fixtures, history_range(settings, now)), now)
-    except (FetchError, SymbolNotFound) as e:
-        print(f"[오류] 시세 조회 실패: {e}", file=sys.stderr)
-        if root is not None:  # 이전 데이터는 그대로 두고 상태만 기록
-            root.child("status").set({"ok": False, "at": stamp, "message": str(e)[:300]})
+        if args.cache_file:
+            cache = json.loads(Path(args.cache_file).read_text()) if Path(args.cache_file).exists() else {}
+        else:
+            cache = (root.child("bars").get() or {}) if root is not None else {}
+        current, final, new_cache, notes = build(settings, pitches, Yahoo(args.fixtures, history_range(settings, now)), now, cache)
+    except Exception as e:  # 어떤 오류든 이전 데이터는 그대로 두고 상태만 기록 (화면에 안내가 뜬다)
+        import traceback
+        traceback.print_exc()
+        kind = "시세 조회 실패" if isinstance(e, (FetchError, SymbolNotFound)) else "계산 오류"
+        print(f"[오류] {kind}: {e}", file=sys.stderr)
+        if root is not None:
+            root.child("status").set({"ok": False, "at": stamp, "message": f"{kind}: {e}"[:300]})
         return 1
 
     if args.demo:
@@ -570,8 +634,11 @@ def main() -> int:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(json.dumps({"current": current, "final": final}, ensure_ascii=False), encoding="utf-8")
 
+    if args.cache_file:
+        Path(args.cache_file).write_text(json.dumps(new_cache))
     bad = [p for p in current["pitches"] if "error" in p]
     if root is not None:
+        root.child("bars").set(new_cache)
         root.child("current").set(current)
         prev = root.child("final").get() or {}
         if prev.get("locked") and not args.force_final:
@@ -588,6 +655,10 @@ def main() -> int:
             print(f"  {p['rank']:>2}위 {p['student']} {p['name']} {p['krwRet'] * 100:+.2f}%")
     for b in current["benchmarks"]:
         print(f"  [기준] {b['name']} {b['krwRet'] * 100:+.2f}%")
+    for n in notes:
+        print(f"  [보정] {n}")
+    if final.get("missing"):
+        print(f"  [평가일 종가 미도착] {', '.join(final['missing'])}")
     for p in bad:
         print(f"  [확인 필요] {p['student']} {p['ticker']}: {p['error']}", file=sys.stderr)
     return 0

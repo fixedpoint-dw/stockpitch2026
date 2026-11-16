@@ -13,8 +13,8 @@
 
     const label = { final: "확정", provisional: "잠정", pending: "진행 중" }[f.status];
     const text = {
-      final: `${mdK(f.finalDate)} 한국·미국 장 마감 종가로 확정한 결과이며 이후 바뀌지 않습니다. 평가일 이후의 수익률은 「실시간 현황」 탭에서 볼 수 있습니다. 계산 시각 ${kst(f.computedAt)} (한국 시각).`,
-      provisional: `평가일 종가를 집계하는 중입니다. 미국 장 마감 가격이 반영되면 확정됩니다. 아래는 ${kst(f.computedAt)} 현재 잠정 결과입니다.`,
+      final: `${mdK(f.finalDate)} 한국·미국 장 마감 종가로 확정한 결과이며 이후 바뀌지 않습니다. 평가일 이후의 수익률은 「실시간 현황」 탭에서 볼 수 있습니다. 계산 시각 ${kst(f.computedAt)} (한국 시각).` + ((f.missing || []).length ? ` 다음 종목은 평가일 종가를 받지 못해 직전 종가로 계산했으니 확인이 필요합니다: ${esc(f.missing.join(", "))}.` : ""),
+      provisional: `평가일 종가를 집계하는 중입니다. 한국·미국 장 마감 가격이 모두 반영되면 확정됩니다. 아래는 ${kst(f.computedAt)} 현재 잠정 결과입니다.` + ((f.missing || []).length ? ` 아직 평가일 종가가 들어오지 않은 종목: ${esc(f.missing.join(", "))}.` : ""),
       pending: `아직 평가일(${mdK(f.finalDate)}) 전입니다. 아래는 ${mdK(f.asOfDate)} 가격 기준 현재 순위이며 최종 결과가 아닙니다. 평가일 종가가 확정되면 이 표는 고정됩니다.`,
     }[f.status];
     $("#f-banner").innerHTML = (f.demo ? "" : "") +

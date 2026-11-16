@@ -35,6 +35,18 @@
     renderTable();
   }
 
+  /* 장 상태는 접속한 시각 기준으로 판단한다 (서버가 저장한 상태는 마지막 갱신 때의 것이라 낡을 수 있다) */
+  const HOURS = { KR: ["Asia/Seoul", 9 * 60, 15 * 60 + 30], US: ["America/New_York", 9 * 60 + 30, 16 * 60] };
+  function marketNow(k, s) {
+    const h = HOURS[k];
+    if (!h) return s.state === "open" ? "open" : "closed";
+    const p = new Intl.DateTimeFormat("en-CA", { timeZone: h[0], weekday: "short", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(new Date());
+    const g = (t) => p.find((x) => x.type === t).value;
+    const mins = (+g("hour") % 24) * 60 + +g("minute");
+    if (g("weekday") === "Sat" || g("weekday") === "Sun" || mins < h[1] || mins >= h[2]) return "closed";
+    return s.lastBar === `${g("year")}-${g("month")}-${g("day")}` ? "open" : "wait";   // 개장 시간인데 오늘 가격이 아직 없으면 휴장이거나 갱신 전
+  }
+
   /* ── 머리 ─────────────────────────────────────────────── */
   function renderHead() {
     const m = state.d.meta;
@@ -52,7 +64,13 @@
     $("#race-start").textContent = `${md(m.baseDate)} 출발`;
     $("#race-end").textContent = `${md(m.finalDate)} 평가`;
 
-    const mk = (k) => { const s = (m.markets || {})[k]; return s ? `<div><dt>${SP.marketName(k)} 장</dt><dd><span class="dot ${s.state === "open" ? "open" : ""}"></span>${s.state === "open" ? "거래 중" : "마감"}</dd></div>` : ""; };
+    const mk = (k) => {
+      const s = (m.markets || {})[k];
+      if (!s) return "";
+      const st = state.source === "demo" ? s.state : marketNow(k, s);
+      const label = { open: "거래 중", closed: "마감", wait: "휴장 또는 갱신 대기" }[st] || "마감";
+      return `<div><dt>${SP.marketName(k)} 장</dt><dd><span class="dot ${st === "open" ? "open" : ""}"></span>${label}</dd></div>`;
+    };
     const usd = (m.fx || {}).USD;
     $("#status").innerHTML =
       `<div><dt>갱신</dt><dd>${kst(m.updatedAt)} (한국 시각)</dd></div>` + mk("KR") + mk("US") +
@@ -64,8 +82,8 @@
     const st = state.status;
     if (st && st.ok === false) b.push(`<div class="banner">최근 갱신(${kst(st.at)})에 실패해 이전 데이터를 보여주고 있습니다. ${esc(st.message || "")}</div>`);
     const ageH = (Date.now() - Date.parse(m.updatedAt)) / 36e5;
-    const wd = new Date().getUTCDay();
-    if (state.source !== "demo" && ageH > (wd >= 2 ? 6 : 30)) b.push(`<div class="banner">마지막 갱신 후 ${Math.floor(ageH)}시간이 지났습니다. 자동 갱신이 멈췄는지 확인이 필요합니다.</div>`);
+    const nowD = new Date(), quiet = nowD.getUTCDay() === 0 || (nowD.getUTCDay() === 1 && nowD.getUTCHours() < 1);   // 예약 실행이 없는 시간대 (한국 일요일 09시 ~ 월요일 09시)
+    if (state.source !== "demo" && ageH > (quiet ? 30 : 1.5)) b.push(`<div class="banner">마지막 갱신 후 ${ageH < 2 ? Math.round(ageH * 60) + "분" : Math.floor(ageH) + "시간"}이 지났습니다. 화면의 가격은 ${kst(m.updatedAt)} 기준이며, 자동 갱신이 늦어지고 있습니다.</div>`);
     const f = state.final;
     if (f && f.status === "final") b.push(`<div class="banner info">${mdK(f.finalDate)} 종가 기준 최종 평가가 확정되었습니다. <a href="#final">최종 평가 탭에서 보기</a></div>`);
     else if (f && f.status === "provisional") b.push(`<div class="banner info">평가일 종가를 집계하고 있습니다. 미국 장 마감 후 확정됩니다. <a href="#final">잠정 평가표 보기</a></div>`);
@@ -324,6 +342,7 @@
     renderTable();
   });
   $("#show-all").addEventListener("change", (e) => { state.showAll = e.target.checked; renderChart(); });
+  setInterval(() => { if (state.d) renderHead(); }, 60 * 1000);   // 장 상태·경과 시간 표시를 1분마다 새로 계산
   let rz;
   window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(renderChart, 150); });
   if (window.matchMedia) window.matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", renderChart);
