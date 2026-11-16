@@ -11,6 +11,9 @@
   const saveSel = () => { try { localStorage.setItem("sp-sel", JSON.stringify(state.sel)); } catch (e) { /* 무시 */ } };
 
   const bmColor = (b) => (b.kind === "etf" ? "var(--c-spy)" : PORT_COLOR[b.id] || "var(--muted)");
+  /* 시장 기준(ETF·지수)은 모두 먹색 선. 두 번째부터는 점선으로 구분한다 */
+  const bmDash = (b) => b.kind === "etf" && state.d.benchmarks.filter((x) => x.kind === "etf").indexOf(b) > 0;
+  const keyOf = (b) => `<span class="key ${bmDash(b) ? "dash" : ""}" style="--k:${bmColor(b)}"></span>`;
   const selOf = (sid) => state.sel.find((s) => s.sid === sid);
   const span = (v, text) => `<span class="${dir(v)}">${text}</span>`;
 
@@ -76,9 +79,10 @@
   }
 
   function renderBench() {
+    $("#bench").style.setProperty("--n", state.d.benchmarks.length);
     $("#bench").innerHTML = state.d.benchmarks.map((b) => `
       <div>
-        <div class="nm"><span class="key" style="--k:${bmColor(b)}"></span>${esc(b.name)}</div>
+        <div class="nm">${keyOf(b)}${esc(b.name)}</div>
         <div class="v num ${dir(b.krwRet)}">${pct(b.krwRet)}</div>
         <div class="d num">당일 ${span(b.dayRet, arrow(b.dayRet) + pct(b.dayRet).replace(/^[+−]/, ""))}</div>
       </div>`).join("");
@@ -111,7 +115,7 @@
 
     state.sel = state.sel.filter((s) => S[s.sid]);
     const names = D.stockNames || {};
-    const hl = D.benchmarks.filter((b) => S[b.sid]).map((b) => ({ sid: b.sid, name: b.name, short: SHORT[b.id] || b.name, color: bmColor(b), sel: false }))
+    const hl = D.benchmarks.filter((b) => S[b.sid]).map((b) => ({ sid: b.sid, name: b.name, short: SHORT[b.id] || b.name, color: bmColor(b), dash: bmDash(b), sel: false }))
       .concat(state.sel.map((s) => ({ sid: s.sid, name: names[s.sid] || s.sid, short: names[s.sid] || s.sid, color: SEL_COLORS[s.slot], sel: true })));
     const others = state.showAll ? Object.keys(S).filter((k) => k.startsWith("s_") && !selOf(k)) : [];
 
@@ -150,19 +154,19 @@
     }
     others.forEach((k) => (g += `<path class="ln ln-other" d="${path(S[k])}"/>`));
     g += `<path class="ln ln-near" id="near" d="" visibility="hidden"/>`;
-    hl.forEach((h) => (g += `<path class="ln ${h.sel ? "ln-sel" : "ln-hl"}" style="stroke:${h.color}" d="${path(S[h.sid])}"/>`));
+    hl.forEach((h) => (g += `<path class="ln ${h.sel ? "ln-sel" : "ln-hl"}" style="stroke:${h.color}"${h.dash ? ' stroke-dasharray="6 4"' : ""} d="${path(S[h.sid])}"/>`));
 
     const ends = hl.map((h) => ({ h, v: S[h.sid][T - 1], y: y(S[h.sid][T - 1]) }));
     ends.forEach((e) => (g += `<circle class="end-dot" cx="${x(T - 1)}" cy="${e.y}" r="${e.h.sel ? 5 : 4}" style="fill:${e.h.color}"/>`));
     if (labels) {
-      const lab = (hl.length <= 4 ? ends : ends.filter((e) => e.h.sel)).map((e) => ({ ...e, ly: e.y })).sort((a, b) => a.ly - b.ly);
+      const lab = (hl.length <= 5 ? ends : ends.filter((e) => e.h.sel)).map((e) => ({ ...e, ly: e.y })).sort((a, b) => a.ly - b.ly);
       for (let i = 1; i < lab.length; i++) lab[i].ly = Math.max(lab[i].ly, lab[i - 1].ly + 16);
       for (let i = lab.length - 1; i >= 0; i--) {
         const cap = i === lab.length - 1 ? m.t + ph - 2 : lab[i + 1].ly - 16;
         lab[i].ly = Math.min(lab[i].ly, cap);
       }
       lab.forEach((e) => {
-        const nm = e.h.short.length > 11 ? e.h.short.slice(0, 10) + "…" : e.h.short;
+        const nm = e.h.short.length > 15 ? e.h.short.slice(0, 14) + "…" : e.h.short;
         g += `<text class="end-label" x="${x(T - 1) + 10}" y="${e.ly + 4}">${esc(nm)} <tspan>${pct(e.v - 1, 1)}</tspan></text>`;
       });
     }
@@ -186,7 +190,7 @@
       others.forEach((k) => { const dy = Math.abs(y(S[k][i]) - py); if (dy < best) { best = dy; nearSid = k; } });
       if (nearSid) { near.setAttribute("d", path(S[nearSid])); near.setAttribute("visibility", "visible"); } else near.setAttribute("visibility", "hidden");
       const rows = hl.slice().sort((a, b) => S[b.sid][i] - S[a.sid][i]).map((h) =>
-        `<div class="r"><span class="key" style="--k:${h.color}"></span><span>${esc(h.name)}</span><b>${pct(S[h.sid][i] - 1)}</b></div>`).join("");
+        `<div class="r"><span class="key ${h.dash ? "dash" : ""}" style="--k:${h.color}"></span><span>${esc(h.name)}</span><b>${pct(S[h.sid][i] - 1)}</b></div>`).join("");
       tip.innerHTML = `<h4>${mdK(dates[i])} (${dow(dates[i])})${i === 0 ? " 기준일" : ""}</h4>${rows}` +
         (nearSid ? `<div class="near r"><span class="key" style="--k:var(--ink-2)"></span><span>${esc(names[nearSid] || nearSid)}</span><b>${pct(S[nearSid][i] - 1)}</b></div><div style="color:var(--muted);font-size:11.5px">누르면 이 종목을 고정합니다</div>` : "");
       tip.hidden = false;
@@ -225,7 +229,7 @@
     tb.innerHTML = list.map(({ t, p }) => {
       if (t === "b") {
         return `<tr class="bm"><td class="rank"><span class="tag">기준</span></td><td class="l hide-m"></td>
-          <td class="l stock"><div class="nmline"><span class="key" style="--k:${bmColor(p)}"></span><b>${esc(p.name)}</b></div>${p.desc ? `<small>${esc(p.desc)}</small>` : `<small>${esc(p.symbol || "")}</small>`}</td>
+          <td class="l stock"><div class="nmline">${keyOf(p)}<b>${esc(p.name)}</b></div>${p.desc ? `<small>${esc(p.desc)}</small>` : `<small>${esc(p.symbol || "")}</small>`}</td>
           <td class="px num">${p.price != null ? price(p.price, p.currency) : ""}<small class="${dir(p.dayRet)}">${arrow(p.dayRet)}${pct(p.dayRet).replace(/^[+−]/, "")}</small></td>
           <td class="hide-m num">${p.localRet != null ? span(p.localRet, pct(p.localRet)) : ""}</td>
           <td class="hide-m num">${p.fxRet != null && p.currency !== "KRW" ? span(p.fxRet, pct(p.fxRet)) : ""}</td>
@@ -259,7 +263,7 @@
           ${p.currency !== "KRW" ? `<div><dt>환율 (${esc(p.currency)}/KRW)</dt><dd>${num(p.fxBase, 1)} → ${num(p.fxNow, 1)} <small>${pct(p.fxRet)}</small></dd></div>` : ""}
           <div><dt>원화 누적수익률</dt><dd>${span(p.krwRet, pct(p.krwRet))} <small>${total}종목 중 ${p.rank}위</small></dd></div>
           ${fr ? `<div><dt>최종 평가 (${md(state.final.finalDate)} 종가)</dt><dd>${span(fr.krwRet, pct(fr.krwRet))} <small>${fr.rank}위</small></dd></div>` : ""}
-          <div><dt>S&amp;P 500 대비</dt><dd>${span(p.vsSpy, pp(p.vsSpy))}</dd></div>
+          ${D.benchmarks.filter((b) => b.kind === "etf").map((b) => `<div><dt>${esc(b.name)} 대비</dt><dd>${span(p.krwRet - b.krwRet, pp(p.krwRet - b.krwRet))}</dd></div>`).join("")}
           <div><dt>3개월 변동성 (연율)</dt><dd>${p.vol3m != null ? (p.vol3m * 100).toFixed(1) + "%" : "–"}</dd></div>
           <div><dt>기간 중 최대 낙폭</dt><dd>${pct(p.mdd)}</dd></div>
         </dl>

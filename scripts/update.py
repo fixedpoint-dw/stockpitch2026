@@ -24,6 +24,7 @@ import os
 import re
 import sys
 import time
+from urllib.parse import quote
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -87,7 +88,7 @@ class Yahoo:
         last = None
         for attempt in range(4):
             for host in HOSTS:
-                url = f"https://{host}/v8/finance/chart/{symbol}"
+                url = f"https://{host}/v8/finance/chart/{quote(symbol, safe='=-.')}"   # ^KS11 → %5EKS11
                 try:
                     r = self._get_session().get(url, params=params, timeout=25)
                     try:
@@ -175,7 +176,7 @@ def resolve_symbol(yh: Yahoo, ticker: str) -> tuple[str, dict]:
                 continue
         raise SymbolNotFound(ticker)
     t = t.replace(".", "-") if re.fullmatch(r"[A-Z]+\.[A-Z]", t) else t  # BRK.B → BRK-B
-    return t, yh.chart(t)
+    return t, yh.chart(t)  # 지수는 ^KS11 처럼 Yahoo 심볼 그대로
 
 
 def fx_symbol(cur: str) -> str:
@@ -300,7 +301,7 @@ def build(settings: dict, pitches: list[dict], yh: Yahoo, now: dt.datetime) -> t
     bench = []
     for b in settings.get("benchmarks", []):
         sym, res = resolve_symbol(yh, b["ticker"])
-        bench.append({"symbol": sym, "name": b.get("name") or sym, "asset": Asset(sym, res)})
+        bench.append({"symbol": sym, "name": b.get("name") or sym, "desc": b.get("desc"), "asset": Asset(sym, res)})
 
     fx: dict[str, Asset] = {}
     for a in list(assets.values()) + [b["asset"] for b in bench]:
@@ -415,7 +416,7 @@ def build(settings: dict, pitches: list[dict], yh: Yahoo, now: dt.datetime) -> t
         bms = []
         for b in bench:
             o = stock_at(b["symbol"], k)
-            o.update(id=sid_of("b_", b["symbol"]), sid=sid_of("b_", b["symbol"]), name=b["name"], kind="etf")
+            o.update(id=sid_of("b_", b["symbol"]), sid=sid_of("b_", b["symbol"]), name=b["name"], kind="etf", desc=b["desc"])
             bms.append(o)
         for p in ports:
             V = p["V"]

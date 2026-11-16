@@ -8,6 +8,11 @@
     {
       "ticker": "SPY",
       "name": "S&P 500 (SPY)"
+    },
+    {
+      "ticker": "^KS11",
+      "name": "KOSPI",
+      "desc": "코스피 지수 (^KS11), 배당 미포함"
     }
   ],
   "rebalance": "daily",

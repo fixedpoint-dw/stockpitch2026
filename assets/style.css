@@ -75,7 +75,7 @@ button, input { font: inherit; color: inherit; }
 .banner.info { background: var(--wash); color: var(--ink); border: 1px solid var(--hair); }
 
 /* ── 기준 포트폴리오 띠 (차트 범례를 겸한다) ─────────────────── */
-.bench { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 2px solid var(--ink); border-bottom: 1px solid var(--hair); margin-bottom: 20px; }
+.bench { display: grid; grid-template-columns: repeat(var(--n, 4), 1fr); border-top: 2px solid var(--ink); border-bottom: 1px solid var(--hair); margin-bottom: 20px; }
 .bench > div { padding: 14px 16px 14px 0; min-width: 0; }
 .bench > div + div { padding-left: 16px; border-left: 1px solid var(--hair); }
 .bench .nm { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -298,3 +298,4 @@ tr.bm .tag { background: var(--brass-soft); border-color: #D2BE85; color: #6E571
 .race[hidden], .status[hidden] { display: none; }
 body.tab-final #banners .banner.info { display: none; }
 .final-table td:nth-child(3) { white-space: normal; min-width: 110px; }
+.key.dash { background: repeating-linear-gradient(90deg, var(--k) 0 5px, transparent 5px 8px); }
