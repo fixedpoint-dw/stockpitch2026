@@ -1,0 +1,8 @@
+{
+  "rules": {
+    "stockpitch": {
+      ".read": true,
+      ".write": false
+    }
+  }
+}

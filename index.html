@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>스톡 피치 리그</title>
+<meta name="description" content="학생 추천 종목의 원화 기준 누적수익률과 순위">
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700;9..144,900&family=IBM+Plex+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&family=Noto+Serif+KR:wght@700;900&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%276%27 fill=%27%23123B2D%27/%3E%3Cpath d=%27M6 22l7-8 5 4 8-10%27 fill=%27none%27 stroke=%27%23fff%27 stroke-width=%273%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27/%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <div class="eyebrow" id="subtitle">학생 추천 종목 성과</div>
+    <h1 id="title">스톡 피치 리그</h1>
+    <p class="sub" id="period"></p>
+  </header>
+  <div class="race" aria-label="평가일까지 남은 기간">
+    <div class="race-head"><strong id="dday">&nbsp;</strong><span id="race-note"></span></div>
+    <div class="track"><i id="race-fill"></i><b id="race-dot"></b><u></u></div>
+    <div class="track-ends"><span id="race-start"></span><span id="race-end"></span></div>
+  </div>
+
+  <dl class="status" id="status" aria-live="polite"></dl>
+  <div id="banners"></div>
+
+  <section class="bench" id="bench" aria-label="기준 포트폴리오"></section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <div>
+        <h2>누적수익률</h2>
+        <p>원화 기준, 배당 포함. 표에서 종목을 누르면 선이 추가됩니다.</p>
+      </div>
+      <div class="tools">
+        <label class="check"><input type="checkbox" id="show-all" checked> 전체 종목 선 보기</label>
+      </div>
+    </div>
+    <div id="chart"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <div>
+        <h2>순위</h2>
+        <p id="rank-sub"></p>
+      </div>
+      <div class="tools">
+        <div class="seg" id="market-filter" role="group" aria-label="시장">
+          <button type="button" data-m="" aria-pressed="true">전체</button>
+          <button type="button" data-m="KR" aria-pressed="false">한국</button>
+          <button type="button" data-m="US" aria-pressed="false">미국</button>
+        </div>
+        <input class="search" id="search" type="search" placeholder="이름이나 종목 찾기" aria-label="이름이나 종목 찾기">
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table id="league">
+        <thead>
+          <tr>
+            <th class="l"><button type="button" data-sort="rank">순위</button></th>
+            <th class="l hide-m">학생</th>
+            <th class="l">종목</th>
+            <th><button type="button" data-sort="localDayRet">현재가 / 당일</button></th>
+            <th class="hide-m"><button type="button" data-sort="localRet">현지통화 수익률</button></th>
+            <th class="hide-m"><button type="button" data-sort="fxRet">환율 효과</button></th>
+            <th><button type="button" data-sort="krwRet">원화 누적수익률</button></th>
+            <th class="barcell" aria-hidden="true"></th>
+            <th class="hide-m"><button type="button" data-sort="vsSpy">S&amp;P 500 대비</button></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <details class="panel" id="weights">
+    <summary>포트폴리오 구성 비중</summary>
+    <div class="body"><div class="table-scroll"><table id="weights-table"></table></div></div>
+  </details>
+
+  <details class="panel">
+    <summary>계산 방법</summary>
+    <div class="body">
+      <ul>
+        <li><b>기준 가격</b>은 <span data-base></span> 종가입니다. 한국 종목은 한국 장, 미국 종목은 미국 장의 종가를 씁니다.</li>
+        <li><b>누적수익률</b>은 Yahoo Finance의 수정주가(배당·액면분할 반영)로 계산한 총수익률입니다. 배당은 배당락일에 재투자한 것으로 봅니다.</li>
+        <li><b>원화 환산</b>: 미국 종목은 달러 수익률에 원/달러 환율 변동을 곱합니다. (1 + 원화 수익률) = (1 + 현지통화 수익률) × (1 + 환율 변동률). 환율은 Yahoo Finance의 KRW=X입니다.</li>
+        <li><b>동일가중 매수 후 보유</b>: 기준일에 모든 종목을 같은 금액씩 사서 그대로 둡니다.</li>
+        <li><b>동일가중 리밸런싱</b>: <span data-rebal></span> 종가에 모든 종목 비중을 다시 1/N로 맞춥니다.</li>
+        <li><b>리스크 패리티</b>: 각 종목의 최근 3개월(<span data-volw></span>거래일) 원화 일간 수익률 변동성을 구해 그 역수에 비례하도록 비중을 정하고, <span data-rebal></span> 다시 맞춥니다. 변동성이 큰 종목일수록 비중이 작습니다.</li>
+        <li>여러 학생이 같은 종목을 추천한 경우 포트폴리오에는 한 번만 들어가고, 순위는 공동 순위로 표시합니다.</li>
+        <li>한국과 미국의 휴장일이 다르면, 쉬는 시장의 종목은 직전 종가를 그대로 씁니다(환율 변동은 반영).</li>
+        <li>가격은 Yahoo Finance 기준으로 15~20분 늦을 수 있고, 화면은 약 30분마다 갱신됩니다.</li>
+      </ul>
+    </div>
+  </details>
+
+  <div class="foot">
+    <span>자료: Yahoo Finance. 수업용 자료이며 투자 권유가 아닙니다.</span>
+    <a class="btn ghost" href="final.html" id="final-link">최종 평가표 보기</a>
+  </div>
+</div>
+
+<script src="assets/config.js"></script>
+<script src="assets/common.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>
