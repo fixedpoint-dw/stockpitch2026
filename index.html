@@ -21,15 +21,21 @@
     <h1 id="title">스톡 피치 리그</h1>
     <p class="sub" id="period"></p>
   </header>
-  <div class="race" aria-label="평가일까지 남은 기간">
+  <div class="race no-print" aria-label="평가일까지 남은 기간">
     <div class="race-head"><strong id="dday">&nbsp;</strong><span id="race-note"></span></div>
     <div class="track"><i id="race-fill"></i><b id="race-dot"></b><u></u></div>
     <div class="track-ends"><span id="race-start"></span><span id="race-end"></span></div>
   </div>
 
-  <dl class="status" id="status" aria-live="polite"></dl>
+  <dl class="status no-print" id="status" aria-live="polite"></dl>
   <div id="banners"></div>
 
+  <nav class="tabs no-print" role="tablist" aria-label="보기 선택">
+    <button class="tab" type="button" role="tab" id="tab-live" aria-controls="view-live" aria-selected="true">실시간 현황</button>
+    <button class="tab" type="button" role="tab" id="tab-final" aria-controls="view-final" aria-selected="false">최종 평가 <span id="tab-final-note"></span></button>
+  </nav>
+
+  <div id="view-live" role="tabpanel" aria-labelledby="tab-live">
   <section class="bench" id="bench" aria-label="기준 포트폴리오"></section>
 
   <section class="panel">
@@ -65,7 +71,7 @@
         <thead>
           <tr>
             <th class="l"><button type="button" data-sort="rank">순위</button></th>
-            <th class="l hide-m">학생</th>
+            <th class="l hide-m">추천자</th>
             <th class="l">종목</th>
             <th><button type="button" data-sort="localDayRet">현재가 / 당일</button></th>
             <th class="hide-m"><button type="button" data-sort="localRet">현지통화 수익률</button></th>
@@ -95,21 +101,44 @@
         <li><b>동일가중 매수 후 보유</b>: 기준일에 모든 종목을 같은 금액씩 사서 그대로 둡니다.</li>
         <li><b>동일가중 리밸런싱</b>: <span data-rebal></span> 종가에 모든 종목 비중을 다시 1/N로 맞춥니다.</li>
         <li><b>리스크 패리티</b>: 각 종목의 최근 3개월(<span data-volw></span>거래일) 원화 일간 수익률 변동성을 구해 그 역수에 비례하도록 비중을 정하고, <span data-rebal></span> 다시 맞춥니다. 변동성이 큰 종목일수록 비중이 작습니다.</li>
-        <li>여러 학생이 같은 종목을 추천한 경우 포트폴리오에는 한 번만 들어가고, 순위는 공동 순위로 표시합니다.</li>
+        <li>여러 명이 같은 종목을 추천한 경우 한 줄에 추천자를 모두 적고, 포트폴리오에도 한 번만 넣습니다.</li>
+        <li><b>최종 평가</b>는 <span data-final></span> 종가로 한 번 확정되어 「최종 평가」 탭에 고정됩니다. 「실시간 현황」은 그 뒤에도 같은 기준일에서 계속 이어서 갱신됩니다.</li>
         <li>한국과 미국의 휴장일이 다르면, 쉬는 시장의 종목은 직전 종가를 그대로 씁니다(환율 변동은 반영).</li>
         <li>가격은 Yahoo Finance 기준으로 15~20분 늦을 수 있고, 화면은 약 30분마다 갱신됩니다.</li>
       </ul>
     </div>
   </details>
 
+  </div>
+
+  <div id="view-final" role="tabpanel" aria-labelledby="tab-final" hidden>
+    <header class="final-head">
+      <h2 id="f-title">최종 평가표</h2>
+      <p id="f-sub"></p>
+    </header>
+    <div id="f-banner"></div>
+    <div class="actions no-print">
+      <button class="btn" type="button" id="btn-print">인쇄 / PDF로 저장</button>
+      <button class="btn ghost" type="button" id="btn-csv">CSV 내려받기</button>
+    </div>
+    <section class="panel">
+      <div class="table-scroll"><table class="final-table" id="f-table"></table></div>
+    </section>
+    <h2 class="sec">기준 포트폴리오</h2>
+    <section class="panel">
+      <div class="table-scroll"><table class="final-table" id="f-bench"></table></div>
+    </section>
+    <p class="notes" id="f-notes"></p>
+  </div>
+
   <div class="foot">
     <span>자료: Yahoo Finance. 수업용 자료이며 투자 권유가 아닙니다.</span>
-    <a class="btn ghost" href="final.html" id="final-link">최종 평가표 보기</a>
   </div>
 </div>
 
 <script src="assets/config.js"></script>
 <script src="assets/common.js"></script>
 <script src="assets/app.js"></script>
+<script src="assets/final.js"></script>
 </body>
 </html>

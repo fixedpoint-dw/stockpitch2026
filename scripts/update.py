@@ -266,21 +266,36 @@ def build(settings: dict, pitches: list[dict], yh: Yahoo, now: dt.datetime) -> t
 
     # 1) 시세 수집 ---------------------------------------------------------- #
     assets: dict[str, Asset] = {}
-    rows = []
-    for i, p in enumerate(pitches):
-        row = {"id": f"r{i + 1}", "student": p["student"], "ticker": p["ticker"], "name": p.get("name") or ""}
-        try:
-            cached = next((r for r in rows if r["ticker"].upper() == p["ticker"].upper() and "symbol" in r), None)
-            if cached:
-                sym = cached["symbol"]
-            else:
+    rows, by_key, tick2sym = [], {}, {}
+    for p in pitches:
+        t = p["ticker"].strip().upper()
+        if t not in tick2sym:
+            try:
                 sym, res = resolve_symbol(yh, p["ticker"])
                 if sym not in assets:
                     assets[sym] = Asset(sym, res)
+                tick2sym[t] = sym
+            except SymbolNotFound:
+                tick2sym[t] = None
+        sym = tick2sym[t]
+        key = sym or "ERR:" + t
+        if key in by_key:  # 같은 종목을 여러 명이 추천 → 한 줄에 추천자를 모두 적는다
+            row = by_key[key]
+            if p["student"] and p["student"] not in row["students"]:
+                row["students"].append(p["student"])
+            row["name"] = row["name"] or p.get("name") or ""
+            continue
+        row = {"students": [p["student"]] if p["student"] else [], "ticker": p["ticker"], "name": p.get("name") or ""}
+        if sym:
             row["symbol"] = sym
-        except SymbolNotFound:
+        else:
             row["error"] = "Yahoo Finance에서 종목을 찾지 못했습니다. 티커를 확인하세요."
+        by_key[key] = row
         rows.append(row)
+    for i, row in enumerate(rows):
+        row["id"] = f"r{i + 1}"
+        row["student"] = ", ".join(row["students"])
+        row["nRec"] = len(row["students"])
 
     bench = []
     for b in settings.get("benchmarks", []):
@@ -381,7 +396,7 @@ def build(settings: dict, pitches: list[dict], yh: Yahoo, now: dt.datetime) -> t
     def snapshot(k: int) -> tuple[list, list]:
         out_rows = []
         for r in rows:
-            o = {kk: r[kk] for kk in ("id", "student", "ticker")}
+            o = {kk: r[kk] for kk in ("id", "student", "nRec", "ticker")}
             if "error" in r:
                 o.update(name=r["name"] or r["ticker"], error=r["error"])
             else:
@@ -449,7 +464,7 @@ def build(settings: dict, pitches: list[dict], yh: Yahoo, now: dt.datetime) -> t
         "finalLockAt": lock_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "lastDate": cal[-1].strftime("%Y-%m-%d"),
         "rebalance": settings.get("rebalance", "daily"), "volWindow": W,
-        "nPitches": len(rows), "nStocks": N, "fx": fx_info, "markets": markets,
+        "nRecommenders": sum(r["nRec"] for r in rows), "nRows": len(rows), "nStocks": N, "fx": fx_info, "markets": markets,
     }
     current = clean({"meta": meta, "dates": [d.strftime("%Y-%m-%d") for d in cal],
                      "pitches": cur_rows, "benchmarks": cur_bms, "series": series,
@@ -485,12 +500,26 @@ def load_pitches(path: Path) -> list[dict]:
     with path.open(encoding="utf-8-sig", newline="") as f:
         for row in csv.DictReader(f):
             row = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
-            if not row.get("ticker") or row.get("student", "").startswith("#"):
+            if not row.get("ticker") or next(iter(row.values()), "").startswith("#"):
                 continue
-            out.append({"student": row.get("student", ""), "ticker": row["ticker"], "name": row.get("name", "")})
+            who = row.get("student") or row.get("recommender") or row.get("추천자") or row.get("학생") or ""
+            out.append({"student": who, "ticker": row["ticker"], "name": row.get("name", "")})
     if not out:
         raise SystemExit("config/pitches.csv 에 종목이 없습니다.")
     return out
+
+
+def history_range(settings: dict, now: dt.datetime) -> str:
+    """기준일 이전 변동성 계산 구간(약 5개월)까지 덮는 가장 짧은 조회 기간. 사이트를 오래 운영해도 기준일 가격이 빠지지 않게 한다."""
+    r = settings.get("history_range", "auto")
+    if r != "auto":
+        return r
+    base = dt.datetime.fromisoformat(settings["base_date"]).replace(tzinfo=dt.timezone.utc)
+    need = (now - base).days + 160
+    for days, name in ((365, "1y"), (730, "2y"), (1825, "5y"), (3650, "10y")):
+        if need <= days - 5:
+            return name
+    return "max"
 
 
 def firebase_root(path: str):
@@ -512,18 +541,20 @@ def main() -> int:
     ap.add_argument("--fixtures", help="Yahoo 대신 읽을 JSON 폴더 (오프라인 테스트용)")
     ap.add_argument("--now", help="현재 시각을 고정 (ISO8601, 테스트용)")
     ap.add_argument("--force-final", action="store_true", help="잠긴 최종 평가를 다시 계산해 덮어씀")
+    ap.add_argument("--config-dir", default=str(ROOT / "config"), help="pitches.csv, settings.json 이 있는 폴더")
     ap.add_argument("--demo", action="store_true", help="결과에 데모 표시를 넣음")
     args = ap.parse_args()
 
-    settings = json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
-    pitches = load_pitches(ROOT / "config" / "pitches.csv")
+    cfg_dir = Path(args.config_dir)
+    settings = json.loads((cfg_dir / "settings.json").read_text(encoding="utf-8"))
+    pitches = load_pitches(cfg_dir / "pitches.csv")
     now = (dt.datetime.fromisoformat(args.now.replace("Z", "+00:00")) if args.now
            else dt.datetime.now(dt.timezone.utc))
     root = None if args.dry_run else firebase_root(settings.get("firebase_path", "stockpitch"))
     stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     try:
-        current, final = build(settings, pitches, Yahoo(args.fixtures, settings.get("history_range", "1y")), now)
+        current, final = build(settings, pitches, Yahoo(args.fixtures, history_range(settings, now)), now)
     except (FetchError, SymbolNotFound) as e:
         print(f"[오류] 시세 조회 실패: {e}", file=sys.stderr)
         if root is not None:  # 이전 데이터는 그대로 두고 상태만 기록
@@ -550,7 +581,7 @@ def main() -> int:
                                   "message": f"{len(bad)}개 종목 오류" if bad else "정상"})
 
     m = current["meta"]
-    print(f"[{stamp}] {m['lastDate']} 기준 · 추천 {m['nPitches']}건 · 종목 {m['nStocks']}개 · 최종평가 {final['status']}")
+    print(f"[{stamp}] {m['lastDate']} 기준 · 추천자 {m['nRecommenders']}명 · 종목 {m['nStocks']}개 · 최종평가 {final['status']}")
     for p in current["pitches"][:5]:
         if "rank" in p:
             print(f"  {p['rank']:>2}위 {p['student']} {p['name']} {p['krwRet'] * 100:+.2f}%")

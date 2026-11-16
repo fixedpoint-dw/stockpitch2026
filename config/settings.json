@@ -5,11 +5,14 @@
   "final_date": "2026-12-09",
   "final_lock_utc": "2026-12-10T03:00:00Z",
   "benchmarks": [
-    { "ticker": "SPY", "name": "S&P 500 (SPY)" }
+    {
+      "ticker": "SPY",
+      "name": "S&P 500 (SPY)"
+    }
   ],
   "rebalance": "daily",
   "vol_window_days": 63,
   "vol_min_obs": 20,
-  "history_range": "1y",
+  "history_range": "auto",
   "firebase_path": "stockpitch"
 }

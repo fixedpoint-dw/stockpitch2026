@@ -21,7 +21,7 @@ TOL = 2e-6
 def run(until, now, out):
     subprocess.run([sys.executable, "tests/make_fixtures.py", "--until", until], cwd=ROOT, check=True, capture_output=True)
     subprocess.run([sys.executable, "scripts/update.py", "--fixtures", "tests/fixtures", "--now", now,
-                    "--dry-run", "--out", out], cwd=ROOT, check=True, capture_output=True)
+                    "--dry-run", "--config-dir", "tests/config", "--out", out], cwd=ROOT, check=True, capture_output=True)
     return json.loads(Path(out).read_text())
 
 
@@ -94,13 +94,14 @@ def main():
     ranks = [(p["rank"], p["krwRet"]) for p in d["current"]["pitches"]]
     assert ranks == sorted(ranks, key=lambda x: -x[1]), "순위가 수익률 내림차순이 아님"
     nv = [p for p in d["current"]["pitches"] if p["symbol"] == "NVDA"]
-    assert len(nv) == 2 and nv[0]["rank"] == nv[1]["rank"], "중복 추천은 공동 순위"
+    assert len(nv) == 1 and nv[0]["student"] == "학생F, 학생I" and nv[0]["nRec"] == 2, "같은 종목 추천자는 한 줄로 묶음"
+    assert len(d["current"]["pitches"]) == 8 and d["current"]["meta"]["nRecommenders"] == 9
     for b in d["current"]["benchmarks"]:
         if b["kind"] == "portfolio":
             assert abs(sum(w["w"] for w in b["weights"]) - 1) < 1e-5 and len(b["weights"]) == 8
     ko = next(p for p in d["current"]["pitches"] if p["symbol"] == "KO")
     assert abs((1 + ko["localRet"]) * (1 + ko["fxRet"]) - 1 - ko["krwRet"]) < TOL, "원화수익률 = 현지수익률 × 환율"
-    print("OK  순위·공동순위·비중 합계·환율 분해")
+    print("OK  순위·추천자 묶기·비중 합계·환율 분해")
 
     # 2) 평가일 당일 한국 장 마감 후, 미국 장 마감 전 → 잠정
     d = run("2026-12-09T08:00:00Z", "2026-12-09T08:00:00Z", "/tmp/sp_prov.json")

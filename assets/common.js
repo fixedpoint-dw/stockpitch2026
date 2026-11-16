@@ -1,8 +1,9 @@
 /* 데이터 불러오기(Firebase REST + 실시간 알림)와 표시 형식 도우미 */
 const SP = (() => {
   const cfg = window.SP_CONFIG || {};
-  const demo = new URLSearchParams(location.search).has("demo") || !cfg.databaseURL;
-  const base = demo ? null : cfg.databaseURL.replace(/\/+$/, "") + "/" + (cfg.path || "stockpitch");
+  const configured = !!cfg.databaseURL;
+  const demo = new URLSearchParams(location.search).has("demo");   // 주소 뒤에 ?demo → 가상 데이터 미리 보기
+  const base = configured ? cfg.databaseURL.replace(/\/+$/, "") + "/" + (cfg.path || "stockpitch") : null;
 
   async function load() {
     if (demo) {
@@ -10,18 +11,26 @@ const SP = (() => {
       if (!r.ok) throw new Error("data/demo.json 을 읽지 못했습니다");
       return { ...(await r.json()), source: "demo" };
     }
+    if (!configured) throw Object.assign(new Error("Firebase 주소가 설정되지 않았습니다"), { code: "unconfigured" });
     const r = await fetch(base + ".json", { cache: "no-store" });
     if (!r.ok) throw new Error("Firebase 응답 오류 (HTTP " + r.status + ")");
     return { ...((await r.json()) || {}), source: "firebase" };
   }
 
-  /* 처음 한 번 읽고, 서버가 새로 저장할 때마다 다시 읽는다 */
+  /* 처음 한 번 읽고, 서버가 새로 저장할 때마다 다시 읽는다. 여러 화면이 같은 결과를 함께 쓴다. */
+  const listeners = [];
+  let started = false, last = null, timer = null;
+  const refresh = () => load()
+    .then((j) => { last = j; listeners.forEach((l) => l.onData(j)); })
+    .catch((e) => listeners.forEach((l) => l.onError && l.onError(e)));
+  const soon = () => { clearTimeout(timer); timer = setTimeout(refresh, 800); };
   function subscribe(onData, onError) {
-    let timer = null;
-    const refresh = () => load().then(onData).catch(onError);
-    const soon = () => { clearTimeout(timer); timer = setTimeout(refresh, 800); };
+    listeners.push({ onData, onError });
+    if (last) onData(last);
+    if (started) return;
+    started = true;
     refresh();
-    if (demo) return;
+    if (demo || !configured) return;
     try {
       let first = true;
       const es = new EventSource(base + "/status.json");
@@ -58,5 +67,5 @@ const SP = (() => {
   const dayDiff = (a, b) => Math.round((Date.parse(b + "T00:00:00Z") - Date.parse(a + "T00:00:00Z")) / 864e5);
   const marketName = (m) => ({ KR: "한국", US: "미국" }[m] || m);
 
-  return { demo, subscribe, esc, sign, dir, pct, pp, arrow, num, price, md, mdK, dow, kst, todayKst, dayDiff, marketName };
+  return { demo, configured, subscribe, esc, sign, dir, pct, pp, arrow, num, price, md, mdK, dow, kst, todayKst, dayDiff, marketName };
 })();

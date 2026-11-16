@@ -40,12 +40,12 @@
     $("#subtitle").textContent = m.subtitle || "";
     const today = SP.todayKst();
     const left = SP.dayDiff(today, m.finalDate);
-    $("#dday").textContent = left > 0 ? `D-${left}` : left === 0 ? "D-DAY" : "평가 종료";
+    $("#dday").textContent = left > 0 ? `D-${left}` : left === 0 ? "D-DAY" : `D+${-left}`;
     $("#period").textContent = `${mdK(m.baseDate)} 종가에서 출발, ${mdK(m.finalDate)} 종가로 평가`;
     const frac = Math.min(1, Math.max(0, SP.dayDiff(m.baseDate, today) / Math.max(1, SP.dayDiff(m.baseDate, m.finalDate))));
     $("#race-fill").style.width = frac * 100 + "%";
     $("#race-dot").style.left = frac * 100 + "%";
-    $("#race-note").textContent = left > 0 ? "평가일까지 남은 날" : "";
+    $("#race-note").textContent = left > 0 ? "평가일까지 남은 날" : left === 0 ? "오늘 종가로 평가" : `${md(m.finalDate)} 평가 완료, 이후 계속 갱신`;
     $("#race-start").textContent = `${md(m.baseDate)} 출발`;
     $("#race-end").textContent = `${md(m.finalDate)} 평가`;
 
@@ -54,20 +54,22 @@
     $("#status").innerHTML =
       `<div><dt>갱신</dt><dd>${kst(m.updatedAt)} (한국 시각)</dd></div>` + mk("KR") + mk("US") +
       (usd ? `<div><dt>원/달러</dt><dd class="num">${num(usd.now, 1)}원 <span class="${dir(usd.ret)}" style="font-weight:500">기준일 대비 ${pct(usd.ret)}</span></dd></div>` : "") +
-      `<div><dt>추천</dt><dd>${m.nPitches}건, ${m.nStocks}종목</dd></div>`;
+      `<div><dt>추천자</dt><dd>${m.nRecommenders}명, ${m.nStocks}종목</dd></div>`;
 
     const b = [];
-    if (state.source === "demo") b.push(`<div class="banner">데모 화면입니다. 가격은 실제 시세가 아닌 가상 데이터입니다. <code>assets/config.js</code>에 Firebase 주소를 넣으면 실제 데이터가 표시됩니다.</div>`);
+    if (state.source === "demo") b.push(`<div class="banner">미리 보기 화면입니다. 추천자와 종목은 실제 명단이지만 <b>가격과 수익률은 가상 데이터</b>입니다.</div>`);
     const st = state.status;
     if (st && st.ok === false) b.push(`<div class="banner">최근 갱신(${kst(st.at)})에 실패해 이전 데이터를 보여주고 있습니다. ${esc(st.message || "")}</div>`);
     const ageH = (Date.now() - Date.parse(m.updatedAt)) / 36e5;
     const wd = new Date().getUTCDay();
     if (state.source !== "demo" && ageH > (wd >= 2 ? 6 : 30)) b.push(`<div class="banner">마지막 갱신 후 ${Math.floor(ageH)}시간이 지났습니다. 자동 갱신이 멈췄는지 확인이 필요합니다.</div>`);
     const f = state.final;
-    if (f && f.status === "final") b.push(`<div class="banner info">${mdK(f.finalDate)} 종가 기준 최종 평가가 확정되었습니다. <a href="final.html">최종 평가표 보기</a></div>`);
-    else if (f && f.status === "provisional") b.push(`<div class="banner info">평가일 종가를 집계하고 있습니다. 미국 장 마감 후 확정됩니다. <a href="final.html">잠정 평가표 보기</a></div>`);
+    if (f && f.status === "final") b.push(`<div class="banner info">${mdK(f.finalDate)} 종가 기준 최종 평가가 확정되었습니다. <a href="#final">최종 평가 탭에서 보기</a></div>`);
+    else if (f && f.status === "provisional") b.push(`<div class="banner info">평가일 종가를 집계하고 있습니다. 미국 장 마감 후 확정됩니다. <a href="#final">잠정 평가표 보기</a></div>`);
     $("#banners").innerHTML = b.join("");
 
+    $("#tab-final-note").textContent = f ? { final: `(${md(m.finalDate)} 확정)`, provisional: "(잠정)", pending: `(${md(m.finalDate)} 예정)` }[f.status] || "" : "";
+    document.querySelectorAll("[data-final]").forEach((e) => (e.textContent = mdK(m.finalDate)));
     document.querySelectorAll("[data-base]").forEach((e) => (e.textContent = mdK(m.baseDate)));
     document.querySelectorAll("[data-rebal]").forEach((e) => (e.textContent = { daily: "매 거래일", weekly: "매주 첫 거래일", none: "(리밸런싱 없음)" }[m.rebalance] || m.rebalance));
     document.querySelectorAll("[data-volw]").forEach((e) => (e.textContent = m.volWindow));
@@ -99,7 +101,7 @@
 
   function renderChart() {
     const host = $("#chart"), D = state.d;
-    if (!D) return;
+    if (!D || !host.clientWidth) return;   // 탭이 숨겨져 있으면 보일 때 다시 그린다
     const dates = D.dates, T = dates.length, S = D.series || {};
     const W = Math.max(280, host.clientWidth - 16), narrow = W < 640, H = narrow ? 300 : 400;
     const fut = futureDays(dates[T - 1], D.meta.finalDate);
@@ -236,9 +238,9 @@
       const s = selOf(p.sid), color = s ? SEL_COLORS[s.slot] : "transparent";
       const mv = p.prevRank ? p.prevRank - p.rank : 0;
       const open = s && state.open === p.id;
-      let html = `<tr class="row ${s ? "sel" : ""}" style="--k:${color}" data-id="${p.id}" data-sid="${p.sid}" tabindex="0" role="button" aria-expanded="${!!open}" aria-label="${esc(p.student)} ${esc(p.name)} 상세 ${open ? "닫기" : "보기"}">
+      let html = `<tr class="row ${s ? "sel" : ""}" style="--k:${color}" data-id="${p.id}" data-sid="${p.sid}" tabindex="0" role="button" aria-expanded="${!!open}" aria-label="${esc(p.name)} (추천자 ${esc(p.student)}) 상세 ${open ? "닫기" : "보기"}">
         <td class="rank"><span class="rk">${p.rank}</span>${mv ? `<span class="mv ${mv > 0 ? "up" : "down"}">${mv > 0 ? "▲" : "▼"}${Math.abs(mv)}</span>` : ""}</td>
-        <td class="l hide-m">${esc(p.student)}</td>
+        <td class="l hide-m who-cell">${esc(p.student)}</td>
         <td class="l stock"><div class="nmline">${s ? `<span class="key" style="--k:${color}"></span>` : ""}<b>${esc(p.name)}</b></div><small>${esc(p.symbol)} <span class="tag">${SP.marketName(p.market)}</span></small><small class="who">${esc(p.student)}</small></td>
         <td class="px num">${price(p.price, p.currency)}<small class="${dir(p.localDayRet)}">${arrow(p.localDayRet)}${pct(p.localDayRet).replace(/^[+−]/, "")}</small></td>
         <td class="hide-m num">${span(p.localRet, pct(p.localRet))}</td>
@@ -246,6 +248,7 @@
         <td class="ret ${dir(p.krwRet)}">${pct(p.krwRet)}</td>${bar(p.krwRet)}
         <td class="hide-m num">${span(p.vsSpy, pp(p.vsSpy))}</td></tr>`;
       if (open) {
+        const fr = state.final && state.final.status === "final" ? (state.final.pitches || []).find((x) => x.symbol === p.symbol && x.rank) : null;
         const divs = (p.dividends || []).map((d) => `${md(d.date)} ${price(d.amount, p.currency)}`).join(", ");
         html += `<tr class="detail" style="--k:${color}"><td colspan="9"><dl class="facts">
           <div><dt>기준가 (${md(p.baseBarDate)} 종가)</dt><dd>${price(p.basePrice, p.currency)}</dd></div>
@@ -254,7 +257,8 @@
           <div><dt>배당 기여</dt><dd>${span(p.divRet, pct(p.divRet))} <small>${divs ? "배당락 " + divs : "기간 중 배당락 없음"}</small></dd></div>
           <div><dt>현지통화 총수익률</dt><dd>${span(p.localRet, pct(p.localRet))}</dd></div>
           ${p.currency !== "KRW" ? `<div><dt>환율 (${esc(p.currency)}/KRW)</dt><dd>${num(p.fxBase, 1)} → ${num(p.fxNow, 1)} <small>${pct(p.fxRet)}</small></dd></div>` : ""}
-          <div><dt>원화 누적수익률</dt><dd>${span(p.krwRet, pct(p.krwRet))} <small>${total}건 중 ${p.rank}위</small></dd></div>
+          <div><dt>원화 누적수익률</dt><dd>${span(p.krwRet, pct(p.krwRet))} <small>${total}종목 중 ${p.rank}위</small></dd></div>
+          ${fr ? `<div><dt>최종 평가 (${md(state.final.finalDate)} 종가)</dt><dd>${span(fr.krwRet, pct(fr.krwRet))} <small>${fr.rank}위</small></dd></div>` : ""}
           <div><dt>S&amp;P 500 대비</dt><dd>${span(p.vsSpy, pp(p.vsSpy))}</dd></div>
           <div><dt>3개월 변동성 (연율)</dt><dd>${p.vol3m != null ? (p.vol3m * 100).toFixed(1) + "%" : "–"}</dd></div>
           <div><dt>기간 중 최대 낙폭</dt><dd>${pct(p.mdd)}</dd></div>
@@ -320,15 +324,36 @@
   window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(renderChart, 150); });
   if (window.matchMedia) window.matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", renderChart);
 
+  /* ── 탭: 실시간 현황 / 최종 평가 ─────────────────────── */
+  function showTab() {
+    const fin = location.hash === "#final";
+    $("#view-live").hidden = fin;
+    $("#view-final").hidden = !fin;
+    $("#tab-live").setAttribute("aria-selected", !fin);
+    $("#tab-final").setAttribute("aria-selected", fin);
+    document.body.classList.toggle("tab-final", fin);
+    if (!fin) renderChart();
+  }
+  $("#tab-live").addEventListener("click", () => { history.replaceState(null, "", location.pathname + location.search); showTab(); });
+  $("#tab-final").addEventListener("click", () => { history.replaceState(null, "", location.pathname + location.search + "#final"); showTab(); });
+  window.addEventListener("hashchange", showTab);
+  showTab();
+
+  const hold = (html) => { $("#banners").innerHTML = html; document.querySelector(".race").hidden = true; $("#status").hidden = true; document.querySelector(".tabs").hidden = true; $("#view-live").hidden = true; $("#view-final").hidden = true; };
   SP.subscribe((j) => {
     if (!j.current) {
-      $("#chart").innerHTML = `<p class="empty">아직 저장된 데이터가 없습니다. GitHub의 Actions 탭에서 “Update stock pitch data”를 한 번 실행하세요.</p>`;
+      hold(`<div class="banner">Firebase에 아직 저장된 데이터가 없습니다. GitHub 저장소의 Actions 탭에서 “Update stock pitch data”를 한 번 실행하세요. 실행이 끝나면 이 화면이 자동으로 바뀝니다.</div>`);
       return;
     }
+    document.querySelector(".tabs").hidden = false;
+    document.querySelector(".race").hidden = false; $("#status").hidden = false;
     state.d = j.current; state.final = j.final || null; state.status = j.status || null; state.source = j.source;
     state.d.pitches = state.d.pitches || []; state.d.benchmarks = state.d.benchmarks || [];
+    showTab();
     renderAll();
   }, (err) => {
-    if (!state.d) $("#chart").innerHTML = `<p class="empty">데이터를 불러오지 못했습니다. ${esc(err.message)}<br>assets/config.js의 Firebase 주소와 데이터베이스 읽기 규칙을 확인하세요.</p>`;
+    if (state.d) return;
+    if (err.code === "unconfigured") hold(`<div class="banner"><b>아직 실제 데이터에 연결되지 않았습니다.</b> <code>assets/config.js</code>의 <code>databaseURL</code>에 Firebase Realtime Database 주소를 넣고, GitHub Actions에서 “Update stock pitch data”를 한 번 실행하면 추천 종목이 모두 표시됩니다. <a href="?demo">가상 데이터로 화면 미리 보기</a></div>`);
+    else hold(`<div class="banner">데이터를 불러오지 못했습니다. ${esc(err.message)}. <code>assets/config.js</code>의 Firebase 주소와 데이터베이스 읽기 규칙(<code>stockpitch</code>의 <code>.read</code>)을 확인하세요.</div>`);
   });
 })();

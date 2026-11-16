@@ -21,6 +21,8 @@ KR_HOLIDAYS = {"2025-12-25", "2026-01-01", "2026-02-16", "2026-02-17", "2026-02-
                "2026-05-01", "2026-05-05", "2026-05-25", "2026-06-03", "2026-08-17", "2026-09-24",
                "2026-09-25", "2026-10-05", "2026-10-09"}
 
+KOSDAQ_DEMO = {"357780", "101160", "036540", "196170", "310210", "083650", "144960", "247540"}
+
 # symbol: (통화, 시간대, 장 시작(현지), 장 마감(현지), 시작가, 연변동성, 연수익률, 배당[(날짜, 금액)])
 SPEC = {
     "005930.KS": ("KRW", "Asia/Seoul", (9, 0), (15, 30), 98000, 0.30, 0.25, []),
@@ -40,13 +42,28 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--until", default="2026-11-27T05:00:00Z")
     ap.add_argument("--start", default="2025-11-17")
+    ap.add_argument("--pitches", help="이 CSV의 모든 티커에 가상 시세를 만든다 (데모 화면용)")
     args = ap.parse_args()
     until = dt.datetime.fromisoformat(args.until.replace("Z", "+00:00"))
     OUT.mkdir(parents=True, exist_ok=True)
     for f in OUT.glob("*.json"):
         f.unlink()
 
-    for n, (sym, (cur, tzname, o, c, p0, vol, mu, divs)) in enumerate(SPEC.items()):
+    spec = dict(SPEC)
+    if args.pitches:
+        import csv, re, zlib
+        for row in csv.DictReader(open(args.pitches, encoding="utf-8-sig")):
+            t = row["ticker"].strip().upper()
+            g = np.random.default_rng(zlib.crc32(t.encode()))
+            if re.fullmatch(r"[0-9][0-9A-Z]{5}", t):
+                sym = t + (".KQ" if t in KOSDAQ_DEMO else ".KS")
+                one = ("KRW", "Asia/Seoul", (9, 0), (15, 30), float(g.integers(200, 3000)) * 100, float(g.uniform(0.25, 0.6)), float(g.uniform(-0.3, 0.5)), [])
+            else:
+                sym = t.replace(".", "-")
+                one = ("USD", "America/New_York", (9, 30), (16, 0), float(g.uniform(20, 600)), float(g.uniform(0.2, 0.8)), float(g.uniform(-0.3, 0.6)), [])
+            spec.setdefault(sym, one)
+
+    for n, (sym, (cur, tzname, o, c, p0, vol, mu, divs)) in enumerate(spec.items()):
         tz = ZoneInfo(tzname)
         rng = np.random.default_rng(1000 + n)  # 종목마다 고정 난수 → until과 무관하게 같은 경로
         hol = KR_HOLIDAYS if tzname == "Asia/Seoul" else US_HOLIDAYS if tzname == "America/New_York" else set()
