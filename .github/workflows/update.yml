@@ -1,0 +1,46 @@
+name: Update stock pitch data
+
+on:
+  schedule:
+    - cron: "7,37 * * * 1-6"
+  workflow_dispatch:
+    inputs:
+      force_final:
+        description: "Recalculate and overwrite the locked final evaluation"
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths: ["config/**", "scripts/**"]
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: stock-pitch-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scripts/requirements.txt
+      - run: pip install -r scripts/requirements.txt
+      - name: Fetch Yahoo Finance, compute, save to Firebase
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
+        run: python scripts/update.py ${{ inputs.force_final && '--force-final' || '' }}
+      - name: Keep the schedule enabled
+        if: github.event_name == 'schedule'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/update.yml/enable"
