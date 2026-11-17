@@ -20,10 +20,14 @@ const SP = (() => {
   /* 처음 한 번 읽고, 서버가 새로 저장할 때마다 다시 읽는다. 여러 화면이 같은 결과를 함께 쓴다. */
   const listeners = [];
   let started = false, last = null, timer = null;
+  let missed = false;   // 화면이 가려진 동안 놓친 갱신이 있는지
   const refresh = () => load()
     .then((j) => { last = j; listeners.forEach((l) => l.onData(j)); })
     .catch((e) => listeners.forEach((l) => l.onError && l.onError(e)));
-  const soon = () => { clearTimeout(timer); timer = setTimeout(refresh, 800); };
+  const soon = () => {
+    if (document.hidden) { missed = true; return; }   // 보고 있지 않은 탭은 다시 읽지 않는다 (다시 보일 때 한 번에 읽음)
+    clearTimeout(timer); timer = setTimeout(refresh, 800);
+  };
   function subscribe(onData, onError) {
     listeners.push({ onData, onError });
     if (last) onData(last);
@@ -38,8 +42,8 @@ const SP = (() => {
       es.addEventListener("put", hit);
       es.addEventListener("patch", hit);
     } catch (e) { /* EventSource 미지원 → 아래 주기 확인으로 충분 */ }
-    setInterval(refresh, 5 * 60 * 1000);
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) soon(); });
+    setInterval(soon, 5 * 60 * 1000);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) { missed = false; soon(); } });
   }
 
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));

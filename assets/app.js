@@ -82,8 +82,9 @@
     const st = state.status;
     if (st && st.ok === false) b.push(`<div class="banner">최근 갱신(${kst(st.at)})에 실패해 이전 데이터를 보여주고 있습니다. ${esc(st.message || "")}</div>`);
     const ageH = (Date.now() - Date.parse(m.updatedAt)) / 36e5;
-    const nowD = new Date(), quiet = nowD.getUTCDay() === 0 || (nowD.getUTCDay() === 1 && nowD.getUTCHours() < 1);   // 예약 실행이 없는 시간대 (한국 일요일 09시 ~ 월요일 09시)
-    if (state.source !== "demo" && ageH > (quiet ? 30 : 1.5)) b.push(`<div class="banner">마지막 갱신 후 ${ageH < 2 ? Math.round(ageH * 60) + "분" : Math.floor(ageH) + "시간"}이 지났습니다. 화면의 가격은 ${kst(m.updatedAt)} 기준이며, 자동 갱신이 늦어지고 있습니다.</div>`);
+    const nowD = new Date(), wdU = nowD.getUTCDay(), hrU = nowD.getUTCHours();
+    const quiet = wdU === 6 || wdU === 0 || (wdU === 5 && hrU >= 21) || (wdU === 1 && hrU < 1);   // 주말(한국 토 06시 ~ 월 10시)은 몇 시간에 한 번만 갱신
+    if (state.source !== "demo" && ageH > (quiet ? 8 : 1.5)) b.push(`<div class="banner">마지막 갱신 후 ${ageH < 2 ? Math.round(ageH * 60) + "분" : Math.floor(ageH) + "시간"}이 지났습니다. 화면의 가격은 ${kst(m.updatedAt)} 기준이며, 자동 갱신이 늦어지고 있습니다.</div>`);
     const f = state.final;
     if (f && f.status === "final") b.push(`<div class="banner info">${mdK(f.finalDate)} 종가 기준 최종 평가가 확정되었습니다. <a href="#final">최종 평가 탭에서 보기</a></div>`);
     else if (f && f.status === "provisional") b.push(`<div class="banner info">평가일 종가를 집계하고 있습니다. 미국 장 마감 후 확정됩니다. <a href="#final">잠정 평가표 보기</a></div>`);

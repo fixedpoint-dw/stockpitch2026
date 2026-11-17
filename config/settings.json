@@ -19,5 +19,7 @@
   "vol_window_days": 63,
   "vol_min_obs": 20,
   "history_range": "auto",
-  "firebase_path": "stockpitch"
+  "firebase_path": "stockpitch",
+  "update_minutes_open": 5,
+  "update_minutes_closed": 30
 }

@@ -10,6 +10,7 @@ Yahoo Finance에서 일별 시세(수정주가 포함)와 환율을 받아
 
 사용 예
   python scripts/update.py                       # Yahoo 조회 → Firebase 저장
+  python scripts/update.py --loop                # 장중 내내 주기적으로 갱신 (GitHub Actions 가 쓰는 방식)
   python scripts/update.py --dry-run --out x.json  # Firebase 없이 결과만 파일로
   python scripts/update.py --fixtures tests/fixtures --now 2026-11-27T05:00:00Z --dry-run --out data/demo.json
 """
@@ -591,37 +592,21 @@ def firebase_root(path: str):
     return db.reference(path)
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--dry-run", action="store_true", help="Firebase에 쓰지 않음")
-    ap.add_argument("--out", help="현재 상태 JSON을 저장할 경로 ({current, final} 묶음)")
-    ap.add_argument("--fixtures", help="Yahoo 대신 읽을 JSON 폴더 (오프라인 테스트용)")
-    ap.add_argument("--now", help="현재 시각을 고정 (ISO8601, 테스트용)")
-    ap.add_argument("--force-final", action="store_true", help="잠긴 최종 평가를 다시 계산해 덮어씀")
-    ap.add_argument("--config-dir", default=str(ROOT / "config"), help="pitches.csv, settings.json 이 있는 폴더")
-    ap.add_argument("--demo", action="store_true", help="결과에 데모 표시를 넣음")
-    ap.add_argument("--cache-file", help="일별 종가 캐시를 Firebase 대신 이 파일에 읽고 쓴다 (테스트용)")
-    args = ap.parse_args()
-
-    cfg_dir = Path(args.config_dir)
-    settings = json.loads((cfg_dir / "settings.json").read_text(encoding="utf-8"))
-    pitches = load_pitches(cfg_dir / "pitches.csv")
-    now = (dt.datetime.fromisoformat(args.now.replace("Z", "+00:00")) if args.now
-           else dt.datetime.now(dt.timezone.utc))
-    root = None if args.dry_run else firebase_root(settings.get("firebase_path", "stockpitch"))
+def run_once(args, settings: dict, pitches: list[dict], root, yh: "Yahoo", now: dt.datetime, force_final: bool) -> int:
+    """한 번 조회·계산·저장. 성공 0, 실패 1 (실패해도 이전 데이터는 그대로 둔다)."""
     stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-
+    yh.rng = history_range(settings, now)
     try:
         if args.cache_file:
             cache = json.loads(Path(args.cache_file).read_text()) if Path(args.cache_file).exists() else {}
         else:
             cache = (root.child("bars").get() or {}) if root is not None else {}
-        current, final, new_cache, notes = build(settings, pitches, Yahoo(args.fixtures, history_range(settings, now)), now, cache)
-    except Exception as e:  # 어떤 오류든 이전 데이터는 그대로 두고 상태만 기록 (화면에 안내가 뜬다)
+        current, final, new_cache, notes = build(settings, pitches, yh, now, cache)
+    except Exception as e:  # 어떤 오류든 상태만 기록 (화면에 안내가 뜬다)
         import traceback
         traceback.print_exc()
         kind = "시세 조회 실패" if isinstance(e, (FetchError, SymbolNotFound)) else "계산 오류"
-        print(f"[오류] {kind}: {e}", file=sys.stderr)
+        print(f"[오류] {kind}: {e}", file=sys.stderr, flush=True)
         if root is not None:
             root.child("status").set({"ok": False, "at": stamp, "message": f"{kind}: {e}"[:300]})
         return 1
@@ -641,7 +626,7 @@ def main() -> int:
         root.child("bars").set(new_cache)
         root.child("current").set(current)
         prev = root.child("final").get() or {}
-        if prev.get("locked") and not args.force_final:
+        if prev.get("locked") and not force_final:
             print("최종 평가는 이미 확정되어 그대로 둡니다 (--force-final 로 재계산).")
         else:
             root.child("final").set(final)
@@ -661,7 +646,95 @@ def main() -> int:
         print(f"  [평가일 종가 미도착] {', '.join(final['missing'])}")
     for p in bad:
         print(f"  [확인 필요] {p['student']} {p['ticker']}: {p['error']}", file=sys.stderr)
+    sys.stdout.flush()
     return 0
+
+
+def loop(args, settings: dict, pitches: list[dict], root, yh: "Yahoo") -> int:
+    """장중 내내 주기적으로 갱신한다. GitHub 예약 실행이 몇 시간씩 건너뛰어도 끊기지 않게 하려는 것.
+
+    - 시작하면 runner 노드에 자기 표시를 남겨 넘겨받는다(이전 실행은 이를 보고 물러난다).
+    - 장중에는 update_minutes_open, 그 외에는 update_minutes_closed 간격으로 갱신.
+    - 다음 개장이 멀면(주말) 끝낸다. 실행 시간 한도가 다가오면 다음 실행을 부르도록 chain=true 를 남긴다.
+    """
+    import runner
+    run_id = os.environ.get("GITHUB_RUN_ID") or f"local-{os.getpid()}"
+    event = os.environ.get("GITHUB_EVENT_NAME", "manual")
+    hb = root.child("runner")
+    utc = lambda: dt.datetime.now(dt.timezone.utc)
+    iso = lambda: utc().strftime("%Y-%m-%dT%H:%M:%SZ")
+    mine = lambda: (hb.get() or {}).get("id") == run_id
+
+    def finish(chain: bool) -> None:
+        if mine():
+            hb.delete()
+        out = os.environ.get("GITHUB_OUTPUT")
+        if chain and out:
+            with open(out, "a") as f:
+                f.write("chain=true\n")
+
+    hb.set({"id": run_id, "at": iso(), "event": event})
+    t_open = float(settings.get("update_minutes_open", 5)) * 60
+    t_closed = float(settings.get("update_minutes_closed", 30)) * 60
+    started, limit = time.monotonic(), args.loop_minutes * 60
+    fails, first = 0, True
+    while True:
+        if not mine():
+            print("다른 실행이 넘겨받아 이 실행은 끝냅니다.")
+            return 0
+        ok = run_once(args, settings, pitches, root, yh, utc(), args.force_final and first) == 0
+        first = False
+        fails = 0 if ok else fails + 1
+        if fails >= 6:
+            print("[오류] 여섯 번 연속 실패해 중단합니다.", file=sys.stderr)
+            finish(False)
+            return 1
+        ph, wait = runner.phase(utc())
+        if ph == "far":
+            print(f"다음 개장까지 {wait:.0f}시간 남아 실행을 끝냅니다. 그동안은 예약 실행이 몇 시간마다 갱신합니다.")
+            finish(False)
+            return 0 if ok else 1
+        interval = t_open if ph == "open" else t_closed
+        if not ok:
+            interval = max(interval, 15 * 60)  # 실패 뒤에는 조금 쉬었다가
+        if time.monotonic() - started + interval > limit:
+            print("실행 시간 한도가 가까워 다음 실행에 넘깁니다.")
+            finish(True)
+            return 0
+        print(f"  다음 갱신까지 {interval / 60:.0f}분 대기 ({'장중' if ph == 'open' else '장외'})", flush=True)
+        end = time.monotonic() + interval
+        while time.monotonic() < end:
+            time.sleep(max(0.0, min(60.0, end - time.monotonic())))
+            if not mine():
+                print("다른 실행이 넘겨받아 이 실행은 끝냅니다.")
+                return 0
+            hb.update({"at": iso()})  # 생존 신호 (id 는 건드리지 않는다)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--dry-run", action="store_true", help="Firebase에 쓰지 않음")
+    ap.add_argument("--out", help="현재 상태 JSON을 저장할 경로 ({current, final} 묶음)")
+    ap.add_argument("--fixtures", help="Yahoo 대신 읽을 JSON 폴더 (오프라인 테스트용)")
+    ap.add_argument("--now", help="현재 시각을 고정 (ISO8601, 테스트용)")
+    ap.add_argument("--force-final", action="store_true", help="잠긴 최종 평가를 다시 계산해 덮어씀")
+    ap.add_argument("--config-dir", default=str(ROOT / "config"), help="pitches.csv, settings.json 이 있는 폴더")
+    ap.add_argument("--demo", action="store_true", help="결과에 데모 표시를 넣음")
+    ap.add_argument("--cache-file", help="일별 종가 캐시를 Firebase 대신 이 파일에 읽고 쓴다 (테스트용)")
+    ap.add_argument("--loop", action="store_true", help="끝내지 않고 주기적으로 계속 갱신 (GitHub Actions 용)")
+    ap.add_argument("--loop-minutes", type=float, default=300, help="--loop 한 번의 최대 실행 시간(분)")
+    args = ap.parse_args()
+
+    cfg_dir = Path(args.config_dir)
+    settings = json.loads((cfg_dir / "settings.json").read_text(encoding="utf-8"))
+    pitches = load_pitches(cfg_dir / "pitches.csv")
+    root = None if args.dry_run else firebase_root(settings.get("firebase_path", "stockpitch"))
+    yh = Yahoo(args.fixtures, "1y")
+    if args.loop and root is not None:
+        return loop(args, settings, pitches, root, yh)
+    now = (dt.datetime.fromisoformat(args.now.replace("Z", "+00:00")) if args.now
+           else dt.datetime.now(dt.timezone.utc))
+    return run_once(args, settings, pitches, root, yh, now, args.force_final)
 
 
 if __name__ == "__main__":
