@@ -2,11 +2,13 @@ name: Update stock pitch data
 
 on:
   schedule:
-    - cron: "3-59/10 * * * 1-6"
+    # 10분마다 깨어나지만, 이미 갱신 중인 실행이 있으면 몇 초 만에 끝납니다.
+    # (GitHub 예약 실행은 몇 시간씩 건너뛰는 일이 있어, 실제 갱신은 아래 "갱신 반복" 단계가 이어 갑니다.)
+    - cron: "3-59/10 * * * *"
   workflow_dispatch:
     inputs:
       force_final:
-        description: "Recalculate and overwrite the locked final evaluation"
+        description: "확정된 최종 평가를 다시 계산해 덮어쓰기"
         type: boolean
         default: false
   push:
@@ -15,32 +17,40 @@ on:
 
 permissions:
   contents: read
-  actions: write
-
-concurrency:
-  group: stock-pitch-update
-  cancel-in-progress: false
+  actions: write   # 다음 실행 부르기, 예약 실행 유지
 
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 345
+    env:
+      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+      FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
+      - name: 이미 갱신 중인 실행이 있는지 확인
+        id: check
+        run: python3 scripts/runner.py check
       - uses: actions/setup-python@v5
+        if: steps.check.outputs.skip != 'true'
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: scripts/requirements.txt
-      - run: pip install -r scripts/requirements.txt
-      - name: Fetch Yahoo Finance, compute, save to Firebase
-        env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
-        run: python scripts/update.py ${{ inputs.force_final && '--force-final' || '' }}
-      - name: Keep the schedule enabled
-        if: github.event_name == 'schedule'
+      - name: 패키지 설치
+        if: steps.check.outputs.skip != 'true'
+        run: pip install -r scripts/requirements.txt
+      - name: 갱신 반복 (장중 5분, 장외 30분 간격)
+        id: loop
+        if: steps.check.outputs.skip != 'true'
+        run: python scripts/update.py --loop ${{ inputs.force_final && '--force-final' || '' }}
+      - name: 다음 실행에 넘기기
+        if: steps.loop.outputs.chain == 'true'
+        run: gh workflow run update.yml --ref "${{ github.ref_name }}"
+      # GitHub는 저장소에 60일간 변화가 없으면 예약 실행을 멈춘다. 워크플로를 다시 '사용'으로 표시해 이를 늦춘다(보장되지는 않음).
+      - name: 예약 실행 유지
+        if: github.event_name == 'schedule' && steps.check.outputs.skip != 'true'
         continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/update.yml/enable"
