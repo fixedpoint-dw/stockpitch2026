@@ -21,5 +21,11 @@
   "history_range": "auto",
   "firebase_path": "stockpitch",
   "update_minutes_open": 5,
-  "update_minutes_closed": 30
+  "update_minutes_closed": 30,
+  "base_prices": {
+    "SNDK": {
+      "date": "2026-11-13",
+      "close": 885.01
+    }
+  }
 }
