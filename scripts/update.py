@@ -213,13 +213,20 @@ class Asset:
         2) 액면분할 직후 과거 가격이 아직 분할 반영 전이면 직접 맞춤
         3) 그래도 기준일 가격이 없으면 설정 파일(base_prices)의 기준가를 사용
         """
+        if getattr(self, "stale", False):
+            return
         fresh_last = self.df.index[-1]
-        entries = {}
+        entries, adjs = {}, {}
         for d, v in (cached or {}).items():
+            if d.startswith("_"):
+                continue
             try:
-                if float(v) > 0:
-                    entries[pd.Timestamp(d)] = float(v)
-            except (TypeError, ValueError):
+                c, a = (float(v[0]), float(v[1])) if isinstance(v, (list, tuple)) else (float(v), None)
+                if c > 0:
+                    entries[pd.Timestamp(d)] = c
+                    if a and a > 0:
+                        adjs[pd.Timestamp(d)] = a
+            except (TypeError, ValueError, IndexError):
                 continue
         missing = sorted((d for d in entries if d not in self.df.index), reverse=True)
         if missing:
@@ -230,8 +237,19 @@ class Asset:
                     scale = 1.0
             else:
                 scale = self._split_scale(max(entries), fresh_last)
+            # 수정주가도 겹치는 날짜로 단위를 맞춰 그대로 쓴다 (배당으로 과거 수정주가가 일괄 조정된 경우 포함)
+            both_adj = [d for d in both if d in adjs]
+            adj_scale = float(np.median([self.df.at[d, "adj"] / adjs[d] for d in both_adj])) if both_adj else None
+            filled = []
             for d in missing:
-                self._insert(d, entries[d] * scale, "일봉 없음 → 이전 실행에서 저장한 종가 사용")
+                if adj_scale is not None and d in adjs:
+                    self.df.loc[d, ["close", "adj", "ts"]] = [entries[d] * scale, adjs[d] * adj_scale, 0]
+                    filled.append(d)
+                else:
+                    self._insert(d, entries[d] * scale, "일봉 없음 → 이전 실행에서 저장한 종가 사용")
+            if filled:
+                self.df = self.df.sort_index()
+                self.notes.append(f"{min(filled):%Y-%m-%d}~{max(filled):%Y-%m-%d} 중 {len(filled)}일 일봉 없음 → 이전 실행에서 저장한 가격 사용")
 
         for sp in self.splits:  # 분할 전후 가격이 서로 다른 단위로 섞여 있으면 최근 가격의 단위로 통일
             k, D = sp["k"], pd.Timestamp(sp["date"])
@@ -260,15 +278,40 @@ class Asset:
             if px > 0 and day <= base_date:
                 self._insert(day, px * self._split_scale(day, self.df.index[-1]), "기준일 가격 없음 → 설정 파일의 기준가 사용")
 
-    def recent_bars(self, base_date: pd.Timestamp, keep: int = 10) -> dict:
-        """다음 실행을 위해 저장할 일별 종가: 기준일 봉 + 최근 keep개."""
+    def cache_bars(self, base_date: pd.Timestamp, keep: int = 400) -> dict:
+        """다음 실행을 위해 저장할 내용: 기준일까지 70일과 그 뒤의 모든 일별 [종가, 수정주가] (최대 keep일) + 종목 정보.
+        Yahoo가 일부 날짜나 종목 전체를 보내지 않아도 여기 저장된 값으로 이어 갈 수 있다."""
         out = {}
         before = self.df[self.df.index <= base_date]
-        if len(before):
-            out[before.index[-1].strftime("%Y-%m-%d")] = round(float(before["close"].iloc[-1]), 6)
-        for day, px in self.df[self.df.index > base_date]["close"].tail(keep).items():
-            out[day.strftime("%Y-%m-%d")] = round(float(px), 6)
+        rows = pd.concat([before.tail(70), self.df[self.df.index > base_date].tail(keep)])  # 기준일 이전 70일은 변동성 계산용
+        for day, r in rows.iterrows():
+            out[day.strftime("%Y-%m-%d")] = [round(float(r["close"]), 6), round(float(r["adj"]), 6)]
+        out["_m"] = {"cur": self.currency, "tz": self.tz, "name": self.name, "exch": self.exchange,
+                     "div": [d for d in self.dividends if d["date"] > base_date.strftime("%Y-%m-%d")],
+                     "spl": [x for x in self.splits if x["date"] > base_date.strftime("%Y-%m-%d")]}
         return out
+
+    @classmethod
+    def from_cache(cls, symbol: str, cached: dict) -> "Asset":
+        """Yahoo가 종목 자체를 보내지 않을 때, 저장해 둔 값만으로 만든다 (마지막 저장 가격에서 멈춘 상태)."""
+        m = cached.get("_m") or {}
+        rows = {}
+        for d, v in cached.items():
+            if d.startswith("_"):
+                continue
+            c, a = (v[0], v[1]) if isinstance(v, (list, tuple)) else (v, v)
+            rows[pd.Timestamp(d)] = {"close": float(c), "adj": float(a), "ts": 0}
+        if not rows or not m.get("cur"):
+            raise SymbolNotFound(symbol)
+        self = object.__new__(cls)
+        self.symbol, self.meta, self.scale = symbol, {}, 1.0
+        self.currency, self.tz = m["cur"], m.get("tz") or "UTC"
+        self.name, self.exchange = m.get("name") or symbol, m.get("exch") or ""
+        self.df = pd.DataFrame.from_dict(rows, orient="index").sort_index()
+        self.dividends, self.splits = list(m.get("div") or []), list(m.get("spl") or [])
+        self.stale = True
+        self.notes = [f"Yahoo가 종목 정보를 보내지 않아 저장해 둔 가격({self.df.index[-1]:%Y-%m-%d}까지)을 사용"]
+        return self
 
     @property
     def market(self) -> str:
@@ -287,6 +330,27 @@ def resolve_symbol(yh: Yahoo, ticker: str) -> tuple[str, dict]:
         raise SymbolNotFound(ticker)
     t = t.replace(".", "-") if re.fullmatch(r"[A-Z]+\.[A-Z]", t) else t  # BRK.B → BRK-B
     return t, yh.chart(t)  # 지수는 ^KS11 처럼 Yahoo 심볼 그대로
+
+
+def load_asset(yh: Yahoo, ticker: str, cache: dict | None, resolve: bool = True) -> tuple[str, "Asset"]:
+    """Yahoo에서 받아 오고, Yahoo가 종목을 보내지 않으면 저장해 둔 값으로 대신한다."""
+    try:
+        if resolve:
+            sym, res = resolve_symbol(yh, ticker)
+        else:
+            sym, res = ticker, yh.chart(ticker)
+        return sym, Asset(sym, res)
+    except SymbolNotFound:
+        t = ticker.strip().upper()
+        if resolve and re.fullmatch(r"[0-9][0-9A-Z]{5}", t):
+            cands = [t + ".KS", t + ".KQ"]
+        else:
+            cands = [t.replace(".", "-") if re.fullmatch(r"[A-Z]+\.[A-Z]", t) else t]
+        for sym in cands:
+            c = (cache or {}).get(sid_of("c_", sym))
+            if c:
+                return sym, Asset.from_cache(sym, c)
+        raise
 
 
 def fx_symbol(cur: str) -> str:
@@ -382,9 +446,8 @@ def build(settings: dict, pitches: list[dict], yh: Yahoo, now: dt.datetime, cach
         t = p["ticker"].strip().upper()
         if t not in tick2sym:
             try:
-                sym, res = resolve_symbol(yh, p["ticker"])
-                if sym not in assets:
-                    assets[sym] = Asset(sym, res)
+                sym, asset = load_asset(yh, p["ticker"], cache)
+                assets.setdefault(sym, asset)
                 tick2sym[t] = sym
             except SymbolNotFound:
                 tick2sym[t] = None
@@ -410,14 +473,14 @@ def build(settings: dict, pitches: list[dict], yh: Yahoo, now: dt.datetime, cach
 
     bench = []
     for b in settings.get("benchmarks", []):
-        sym, res = resolve_symbol(yh, b["ticker"])
-        bench.append({"symbol": sym, "name": b.get("name") or sym, "desc": b.get("desc"), "asset": Asset(sym, res)})
+        sym, asset = load_asset(yh, b["ticker"], cache)
+        bench.append({"symbol": sym, "name": b.get("name") or sym, "desc": b.get("desc"), "asset": asset})
 
     fx: dict[str, Asset] = {}
     for a in list(assets.values()) + [b["asset"] for b in bench]:
         if a.currency != "KRW" and a.currency not in fx:
             s = fx_symbol(a.currency)
-            fx[a.currency] = Asset(s, yh.chart(s))
+            fx[a.currency] = load_asset(yh, s, cache, resolve=False)[1]
 
     # 2) 공통 달력: 기준일 + 그 이후 어느 시장이든 거래가 있었던 날 ------------ #
     all_assets = list(assets.values()) + [b["asset"] for b in bench]
@@ -428,7 +491,7 @@ def build(settings: dict, pitches: list[dict], yh: Yahoo, now: dt.datetime, cach
     for a in everything:
         key = sid_of("c_", a.symbol)
         a.repair((cache or {}).get(key), (settings.get("base_prices") or {}).get(a.symbol), base_date)
-        new_cache[key] = a.recent_bars(base_date)
+        new_cache[key] = a.cache_bars(base_date)
         notes += [f"{a.symbol}: {n}" for n in a.notes]
     days = set()
     for a in all_assets:
@@ -508,6 +571,7 @@ def build(settings: dict, pitches: list[dict], yh: Yahoo, now: dt.datetime, cach
             "vol3m": float(f["vol"][k]) if np.isfinite(f["vol"][k]) else None,
             "dividends": [d for d in a.dividends if d0 < d["date"] <= dk],
             "splits": [s for s in a.splits if d0 < s["date"] <= dk],
+            "stale": True if getattr(a, "stale", False) else None,
         }
         if a.currency != "KRW":
             out["fxBase"], out["fxNow"] = float(f["fx"][0]), float(f["fx"][k])
