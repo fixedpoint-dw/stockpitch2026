@@ -277,6 +277,7 @@
           <div><dt>기준가 (${md(p.baseBarDate)} 종가)</dt><dd>${price(p.basePrice, p.currency)}</dd></div>
           <div><dt>현재가 (${md(p.priceDate)})</dt><dd>${price(p.price, p.currency)}</dd></div>
           <div><dt>주가 수익률</dt><dd>${span(p.priceRet, pct(p.priceRet))}</dd></div>
+          ${(p.splits || []).length ? `<div><dt>액면분할</dt><dd>${p.splits.map((x) => `${md(x.date)} ${esc(x.ratio)}`).join(", ")} <small>가격은 분할 반영 기준</small></dd></div>` : ""}
           <div><dt>배당 기여</dt><dd>${span(p.divRet, pct(p.divRet))} <small>${divs ? "배당락 " + divs : "기간 중 배당락 없음"}</small></dd></div>
           <div><dt>현지통화 총수익률</dt><dd>${span(p.localRet, pct(p.localRet))}</dd></div>
           ${p.currency !== "KRW" ? `<div><dt>환율 (${esc(p.currency)}/KRW)</dt><dd>${num(p.fxBase, 1)} → ${num(p.fxNow, 1)} <small>${pct(p.fxRet)}</small></dd></div>` : ""}
