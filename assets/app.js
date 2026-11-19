@@ -264,7 +264,7 @@
       let html = `<tr class="row ${s ? "sel" : ""}" style="--k:${color}" data-id="${p.id}" data-sid="${p.sid}" tabindex="0" role="button" aria-expanded="${!!open}" aria-label="${esc(p.name)} (추천자 ${esc(p.student)}) 상세 ${open ? "닫기" : "보기"}">
         <td class="rank"><span class="rk">${p.rank}</span>${mv ? `<span class="mv ${mv > 0 ? "up" : "down"}">${mv > 0 ? "▲" : "▼"}${Math.abs(mv)}</span>` : ""}</td>
         <td class="l hide-m who-cell">${esc(p.student)}</td>
-        <td class="l stock"><div class="nmline">${s ? `<span class="key" style="--k:${color}"></span>` : ""}<b>${esc(p.name)}</b></div><small>${esc(p.symbol)} <span class="tag">${SP.marketName(p.market)}</span></small><small class="who">${esc(p.student)}</small></td>
+        <td class="l stock"><div class="nmline">${s ? `<span class="key" style="--k:${color}"></span>` : ""}<b>${esc(p.name)}</b></div><small>${esc(p.symbol)} <span class="tag">${SP.marketName(p.market)}</span>${p.stale ? ` <span class="err">Yahoo 응답 없음, ${md(p.priceDate)} 저장 가격</span>` : ""}</small><small class="who">${esc(p.student)}</small></td>
         <td class="px num">${price(p.price, p.currency)}<small class="${dir(p.localDayRet)}">${arrow(p.localDayRet)}${pct(p.localDayRet).replace(/^[+−]/, "")}</small></td>
         <td class="hide-m num">${span(p.localRet, pct(p.localRet))}</td>
         <td class="hide-m num">${p.currency === "KRW" ? `<span class="flat">–</span>` : span(p.fxRet, pct(p.fxRet))}</td>

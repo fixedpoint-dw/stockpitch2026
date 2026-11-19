@@ -12,9 +12,14 @@ const SP = (() => {
       return { ...(await r.json()), source: "demo" };
     }
     if (!configured) throw Object.assign(new Error("Firebase 주소가 설정되지 않았습니다"), { code: "unconfigured" });
-    const r = await fetch(base + ".json", { cache: "no-store" });
-    if (!r.ok) throw new Error("Firebase 응답 오류 (HTTP " + r.status + ")");
-    return { ...((await r.json()) || {}), source: "firebase" };
+    // 화면에 필요한 세 갈래만 읽는다 (서버가 따로 보관하는 일별 가격 기록은 내려받지 않는다)
+    const get = async (k) => {
+      const r = await fetch(`${base}/${k}.json`, { cache: "no-store" });
+      if (!r.ok) throw new Error("Firebase 응답 오류 (HTTP " + r.status + ")");
+      return r.json();
+    };
+    const [current, final, status] = await Promise.all(["current", "final", "status"].map(get));
+    return { current, final, status, source: "firebase" };
   }
 
   /* 처음 한 번 읽고, 서버가 새로 저장할 때마다 다시 읽는다. 여러 화면이 같은 결과를 함께 쓴다. */
