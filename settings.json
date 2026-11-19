@@ -1,0 +1,31 @@
+{
+  "title": "스톡 피치 리그",
+  "subtitle": "학생 추천 종목 성과",
+  "base_date": "2026-11-13",
+  "final_date": "2026-12-09",
+  "final_lock_utc": "2026-12-10T03:00:00Z",
+  "benchmarks": [
+    {
+      "ticker": "SPY",
+      "name": "S&P 500 (SPY)"
+    },
+    {
+      "ticker": "^KS11",
+      "name": "KOSPI",
+      "desc": "코스피 지수 (^KS11), 배당 미포함"
+    }
+  ],
+  "rebalance": "daily",
+  "vol_window_days": 63,
+  "vol_min_obs": 20,
+  "history_range": "auto",
+  "firebase_path": "stockpitch",
+  "update_minutes_open": 5,
+  "update_minutes_closed": 30,
+  "base_prices": {
+    "SNDK": {
+      "date": "2026-11-13",
+      "close": 885.01
+    }
+  }
+}
