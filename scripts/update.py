@@ -171,28 +171,94 @@ class Asset:
         self.splits = []
         for s in (ev.get("splits") or {}).values():
             when = pd.Timestamp(s["date"], unit="s", tz="UTC").tz_convert(self.tz)
-            self.splits.append({"date": when.strftime("%Y-%m-%d"),
-                                "ratio": s.get("splitRatio") or f'{s.get("numerator")}:{s.get("denominator")}'})
-
-    def fill_from(self, cached: dict) -> None:
-        """이전 실행에서 저장해 둔 일별 종가로, 이번 응답에서 빠진 날짜를 채운다 (새 응답에 있는 날짜는 건드리지 않는다)."""
-        for d in sorted(cached or {}, reverse=True):
             try:
-                day, px = pd.Timestamp(d), float(cached[d])
+                k = float(s.get("numerator")) / float(s.get("denominator"))
+            except (TypeError, ValueError, ZeroDivisionError):
+                k = 1.0
+            self.splits.append({"date": when.strftime("%Y-%m-%d"), "k": k,
+                                "ratio": s.get("splitRatio") or f'{s.get("numerator")}:{s.get("denominator")}'})
+        self.splits.sort(key=lambda x: x["date"])
+
+        # 수정주가가 비정상(0 이하이거나 종가와 동떨어진 값)이면 그 날은 종가로 대신한다
+        r = self.df["adj"] / self.df["close"]
+        bad = ~np.isfinite(r) | (r < 0.2) | (r > 1.05)
+        if bad.any():
+            self.df.loc[bad, "adj"] = self.df.loc[bad, "close"]
+            self.notes.append(f"수정주가 이상 {int(bad.sum())}일 → 종가로 대체")
+
+    def _split_scale(self, after: pd.Timestamp, upto: pd.Timestamp) -> float:
+        """after 날짜의 가격을 upto 시점의 (분할 반영) 단위로 바꾸는 배율."""
+        f = 1.0
+        for sp in self.splits:
+            if after < pd.Timestamp(sp["date"]) <= upto and sp["k"] > 0:
+                f /= sp["k"]
+        return f
+
+    def _insert(self, day: pd.Timestamp, px: float, why: str) -> None:
+        later = self.df[self.df.index > day]
+        ratio = float(later["adj"].iloc[0] / later["close"].iloc[0]) if len(later) else 1.0
+        nxt = later.index[0] if len(later) else None
+        for dv in self.dividends:  # 그 사이에 배당락이 있으면 수정주가 비율을 한 단계 더 적용
+            ex = pd.Timestamp(dv["date"])
+            if ex > day and (nxt is None or ex <= nxt):
+                ratio *= 1 - dv["amount"] / px
+        self.df.loc[day, ["close", "adj", "ts"]] = [px, px * ratio, 0]
+        self.df = self.df.sort_index()
+        self.notes.append(f"{day:%Y-%m-%d} {why}")
+
+    def repair(self, cached: dict | None, manual: dict | None, base_date: pd.Timestamp) -> None:
+        """Yahoo 응답의 빈 곳을 메운다. 새 응답에 있는 날짜의 값은 그대로 두고, 없는 날짜만 채운다.
+
+        1) 이전 실행에서 저장해 둔 종가로 빠진 날짜를 채움 (액면분할로 단위가 바뀌었으면 맞춰서)
+        2) 액면분할 직후 과거 가격이 아직 분할 반영 전이면 직접 맞춤
+        3) 그래도 기준일 가격이 없으면 설정 파일(base_prices)의 기준가를 사용
+        """
+        fresh_last = self.df.index[-1]
+        entries = {}
+        for d, v in (cached or {}).items():
+            try:
+                if float(v) > 0:
+                    entries[pd.Timestamp(d)] = float(v)
             except (TypeError, ValueError):
                 continue
-            if not (px > 0) or day in self.df.index or day <= self.df.index[0]:
+        missing = sorted((d for d in entries if d not in self.df.index), reverse=True)
+        if missing:
+            both = [d for d in entries if d in self.df.index and d != fresh_last]
+            if both:  # 양쪽에 다 있는 날짜로 단위(분할 반영 여부)를 맞춘다
+                scale = float(np.median([self.df.at[d, "close"] / entries[d] for d in both]))
+                if abs(math.log(scale)) < 0.02:
+                    scale = 1.0
+            else:
+                scale = self._split_scale(max(entries), fresh_last)
+            for d in missing:
+                self._insert(d, entries[d] * scale, "일봉 없음 → 이전 실행에서 저장한 종가 사용")
+
+        for sp in self.splits:  # 분할 전후 가격이 서로 다른 단위로 섞여 있으면 최근 가격의 단위로 통일
+            k, D = sp["k"], pd.Timestamp(sp["date"])
+            if not (k >= 1.8 or 0 < k <= 0.55):
                 continue
-            later = self.df[self.df.index > day]
-            ratio = float(later["adj"].iloc[0] / later["close"].iloc[0]) if len(later) else 1.0
-            nxt = later.index[0] if len(later) else None
-            for dv in self.dividends:  # 그 사이에 배당락이 있으면 수정주가 비율을 한 단계 더 적용
-                ex = pd.Timestamp(dv["date"])
-                if ex > day and (nxt is None or ex <= nxt):
-                    ratio *= 1 - dv["amount"] / px
-            self.df.loc[day, ["close", "adj", "ts"]] = [px, px * ratio, 0]
-            self.df = self.df.sort_index()
-            self.notes.append(f"{d} 일봉 없음 → 이전 실행에서 저장한 종가 사용")
+            near = [i for i, d in enumerate(self.df.index) if i > 0 and abs((d - D).days) <= 5]
+            for i in near:
+                jump = float(self.df["close"].iloc[i] / self.df["close"].iloc[i - 1])
+                if abs(math.log(jump)) <= 0.5:
+                    continue
+                for f in (1 / k, k):
+                    if abs(math.log(jump / f)) < 0.4:
+                        cols = [self.df.columns.get_loc("close"), self.df.columns.get_loc("adj")]
+                        self.df.iloc[:i, cols] = self.df.iloc[:i, cols] * f
+                        self.notes.append(f"액면분할({sp['ratio']}, {sp['date']}) 전후 가격 단위가 달라 이전 가격을 맞춤")
+                        break
+                else:
+                    continue
+                break
+
+        if manual and not (self.df.index <= base_date).any():
+            try:
+                day, px = pd.Timestamp(manual["date"]), float(manual["close"])
+            except (KeyError, TypeError, ValueError):
+                return
+            if px > 0 and day <= base_date:
+                self._insert(day, px * self._split_scale(day, self.df.index[-1]), "기준일 가격 없음 → 설정 파일의 기준가 사용")
 
     def recent_bars(self, base_date: pd.Timestamp, keep: int = 10) -> dict:
         """다음 실행을 위해 저장할 일별 종가: 기준일 봉 + 최근 keep개."""
@@ -361,7 +427,7 @@ def build(settings: dict, pitches: list[dict], yh: Yahoo, now: dt.datetime, cach
     new_cache, notes = {}, []
     for a in everything:
         key = sid_of("c_", a.symbol)
-        a.fill_from((cache or {}).get(key))
+        a.repair((cache or {}).get(key), (settings.get("base_prices") or {}).get(a.symbol), base_date)
         new_cache[key] = a.recent_bars(base_date)
         notes += [f"{a.symbol}: {n}" for n in a.notes]
     days = set()
@@ -391,7 +457,7 @@ def build(settings: dict, pitches: list[dict], yh: Yahoo, now: dt.datetime, cach
             raise FetchError(f"벤치마크 {b['symbol']}의 기준일 가격이 없습니다")
     for r in rows:
         if "symbol" in r and not frames[r["symbol"]]["ok"]:
-            r["error"] = f"기준일({settings['base_date']}) 이전 가격이 없습니다."
+            r["error"] = f"Yahoo Finance가 기준일({settings['base_date']}) 가격을 보내지 않았습니다."
 
     # 3) 포트폴리오 (중복 추천 종목은 한 번만 편입) --------------------------- #
     univ = [s for s in assets if frames[s]["ok"]]
